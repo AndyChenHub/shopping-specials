@@ -31,9 +31,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
 
-      - name: Select latest stable Xcode
-        run: |
-          xcodebuild -version
+      - name: Check Xcode version
+        run: xcodebuild -version
 
       - name: Install app dependencies
         working-directory: app
@@ -43,91 +42,9 @@ jobs:
         working-directory: app
         run: npx tsc --noEmit
 
-      - name: Generate native iOS Xcode project (Expo Prebuild)
+      - name: Build native iOS Release .ipa
         working-directory: app
-        env:
-          CI: '1'
-        run: npx expo prebuild --platform ios --clean --no-install
-
-      - name: Configure Podfile & install CocoaPods
-        working-directory: app
-        env:
-          LANG: en_US.UTF-8
-        run: |
-          echo "export NODE_BINARY=$(which node)" > ios/.xcode.env.local
-
-          if [ -f "ios/Podfile" ]; then
-            ruby -e '
-              path = "ios/Podfile"
-              content = File.read(path)
-              snippet = <<-RUBY
-    installer.pods_project.targets.each do |target|
-      target.build_configurations.each do |config|
-        config.build_settings["CODE_SIGNING_ALLOWED"] = "NO"
-        config.build_settings["CODE_SIGNING_REQUIRED"] = "NO"
-        config.build_settings["CODE_SIGN_IDENTITY"] = ""
-      end
-    end
-              RUBY
-              if content.include?("post_install do |installer|")
-                content.sub!("post_install do |installer|", "post_install do |installer|\n#{snippet}")
-                File.write(path, content)
-              end
-            '
-            cd ios && pod install --repo-update
-          fi
-
-      - name: Compile Release iOS .app & package AussieSpecials.ipa
-        working-directory: app
-        run: |
-          set -eo pipefail
-
-          WORKSPACE=$(find ios -maxdepth 1 -name "*.xcworkspace" | head -n 1 || true)
-          PROJECT=$(find ios -maxdepth 1 -name "*.xcodeproj" | head -n 1 || true)
-
-          if [ -n "$WORKSPACE" ]; then
-            SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-            TARGET_ARGS=(-workspace "$WORKSPACE" -scheme "$SCHEME")
-          elif [ -n "$PROJECT" ]; then
-            SCHEME=$(basename "$PROJECT" .xcodeproj)
-            TARGET_ARGS=(-project "$PROJECT" -scheme "$SCHEME")
-          else
-            echo "Error: Could not find generated .xcworkspace or .xcodeproj in app/ios"
-            exit 1
-          fi
-
-          echo "Building iOS Release scheme: $SCHEME"
-
-          xcodebuild build \
-            "${TARGET_ARGS[@]}" \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath "ios/build" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            DEVELOPMENT_TEAM=""
-
-          APP_PATH=$(find "ios/build/Build/Products/Release-iphoneos" -maxdepth 1 -name "*.app" | head -n 1)
-          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "Error: Compiled .app bundle not found!"
-            exit 1
-          fi
-
-          echo "Packaging $APP_PATH into AussieSpecials.ipa..."
-          rm -rf build-ipa AussieSpecials.ipa
-          mkdir -p build-ipa/Payload
-          cp -R "$APP_PATH" build-ipa/Payload/
-
-          # Apply ad-hoc Mach-O signature so Sideloadly / AltStore / SideStore re-sign cleanly
-          APP_BASENAME=$(basename "$APP_PATH")
-          codesign --force --deep --sign - "build-ipa/Payload/$APP_BASENAME"
-
-          (cd build-ipa && zip -qry "../AussieSpecials.ipa" Payload)
-          ls -lh AussieSpecials.ipa
+        run: bash scripts/build-ipa.sh
 
       - name: Upload AussieSpecials.ipa Artifact
         uses: actions/upload-artifact@v4
@@ -137,9 +54,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Attach .ipa to GitHub Release (when released)
+      - name: Attach .ipa to GitHub Release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "${{ github.event.release.tag_name }}" app/AussieSpecials.ipa --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" app/AussieSpecials.ipa --clobber
