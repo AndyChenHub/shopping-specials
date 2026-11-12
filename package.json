@@ -1,0 +1,15 @@
+{
+  "name": "shopping-specials",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Australian Supermarket Specials iOS App (Woolworths, Coles & ALDI) + Companion Web Scraper/Catalogue Backend",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "server:dev": "npm --prefix server run dev",
+    "sync": "npm --prefix server run sync",
+    "app": "npm --prefix app start",
+    "app:ios": "npm --prefix app run ios",
+    "app:web": "npm --prefix app run web",
+    "install:all": "npm --prefix server install && npm --prefix app install"
+  }
+}

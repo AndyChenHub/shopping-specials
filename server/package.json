@@ -1,0 +1,17 @@
+{
+  "name": "shopping-specials-server",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Companion backend that searches the web and downloads weekly specials from Woolworths, Coles, and ALDI",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "sync": "node src/cli-sync.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
