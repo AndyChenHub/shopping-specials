@@ -1,13 +1,19 @@
-# Aussie Supermarket Specials (iOS `.ipa` + Web Companion)
+# Aussie Specials & Price Compare (iOS `.ipa` + Web Companion)
 
-Browse weekly specials, **½ Price** deals, and **Special Buys** across **Woolworths**, **Coles**, and **ALDI** in one unified iOS app built with **React Native (Expo)** and an optional **Node.js** companion backend.
+Browse everyday supermarket items, filter by **On Sale** or **½ Price** deals, and **tap any item to compare live competitor prices** across **Amazon AU**, **Woolworths**, **Coles**, **ALDI**, and **IGA** in one unified iOS app built with **React Native (Expo)** and an optional **Node.js** companion backend.
+
+## Key Features
+
+- **Browse All Items or Filter by Sales**: Switch instantly between **All Items** (everyday groceries + specials), **On Sale**, and **½ Price** deals across **Woolworths**, **Coles**, **ALDI**, **IGA**, and **Amazon AU**.
+- **One-Tap 5-Store Price Comparison**: Tapping any browsed item opens its detail sheet and fetches live side-by-side prices across **Amazon AU (`amazon.com.au`)**, **Woolworths**, **Coles**, **ALDI**, and **IGA**, highlighting the **Best Price**, unit prices, active promotions, and direct links to each store.
+- **Live Cross-Retailer Search**: Search any item (e.g. *Nutella*, *Tim Tam*, *milk*, *Panadol*) locally or tap **Live Search** to query all 5 retailers simultaneously.
 
 ## Architecture
 
 - **`app/`** — React Native (Expo + TypeScript) iOS app:
-  - **Standalone On-Device Sync (`.ipa` Ready)**: Downloads and caches Woolworths, Coles, and ALDI specials directly on your iPhone over 4G/5G or Wi-Fi—no PC server required once installed!
+  - **Standalone On-Device Sync & Comparison (`.ipa` Ready)**: Downloads catalogues, everyday staples, and live competitor prices directly on your iPhone over 4G/5G or Wi-Fi—no PC server required once installed!
   - **Auto LAN Companion Mode**: Also supports connecting to `server/` when previewing in a desktop browser or running on local Wi-Fi.
-- **`server/`** — Optional Node.js + Express companion backend that fetches and caches weekly specials locally (`server/.cache/specials-cache.json`) for fast desktop/web previewing.
+- **`server/`** — Optional Node.js + Express companion backend that fetches and caches items & weekly specials locally (`server/.cache/specials-cache.json`) and serves `/api/specials` + `/api/compare` for desktop/web previewing.
 
 ---
 
@@ -15,18 +21,22 @@ Browse weekly specials, **½ Price** deals, and **Special Buys** across **Woolwo
 
 Because Apple's Xcode compiler only runs on macOS, this repo includes two cloud pipelines so you can generate an `.ipa` directly from Windows:
 
-### Option 1: Free `.ipa` via GitHub Actions (No Paid Apple Developer Account Needed)
-The workflow in [`.github/workflows/build-ios-ipa.yml`](./.github/workflows/build-ios-ipa.yml) compiles a native Release `.ipa` on a macOS + Xcode runner automatically whenever `app/` is pushed to `main` (or manually via **Run workflow**).
+### Option 1: Free Versioned `.ipa` Releases via GitHub Actions
+The workflow in [`.github/workflows/build-ios-ipa.yml`](./.github/workflows/build-ios-ipa.yml) compiles a native Release `.ipa` on a macOS + Xcode runner automatically whenever `app/` is pushed to `main` (or manually via **Run workflow**):
 
-1. **Push your commits to GitHub**:
-   ```powershell
-   git push -u origin main
-   ```
-2. Open your repository's **Actions** tab on GitHub (`Build iOS IPA`) and wait ~6–10 minutes for the macOS build to finish.
-3. Download the **`AussieSpecials-iOS-ipa`** zip artifact and extract **`AussieSpecials.ipa`**.
-4. **Install onto your iPhone for free** using a standard Apple ID with **[Sideloadly](https://sideloadly.io/)** or **[AltStore](https://altstore.io/)** on Windows:
-   - Connect your iPhone via USB (with iTunes + iCloud installed from Apple's website, not Microsoft Store), drag `AussieSpecials.ipa` into Sideloadly, enter your Apple ID, and click **Start**.
-   - On your iPhone, go to **Settings → General → VPN & Device Management** to trust your developer profile (and enable **Developer Mode** under **Settings → Privacy & Security** on iOS 16+).
+- **Automatic Semantic Version + Build Numbering**: Before compiling, [`app/scripts/prepare-release-version.mjs`](./app/scripts/prepare-release-version.mjs) inspects existing `v*` Git tags, auto-increments the patch & iOS `CFBundleVersion` build number, embeds the version metadata into [`app/src/versionInfo.json`](./app/src/versionInfo.json), and names the binary `AussieSpecials-vX.Y.Z-bN.ipa`.
+- **Automatic GitHub Releases**: Every build tags `vX.Y.Z` and publishes the versioned `.ipa`, its `.sha256` checksum, and auto-generated commit changelog to **GitHub Releases** (`https://github.com/AndyChenHub/shopping-specials/releases`).
+- **In-App Update Checker**: The installed `.ipa` displays its current version badge (`vX.Y.Z`) in the header and checks GitHub Releases automatically, alerting you with one-tap **Download `.ipa`** and **SideStore / AltStore** install buttons when a newer `.ipa` is published.
+- **Manual Major/Minor Version Bumps** (optional):
+  ```powershell
+  npm run version:minor   # e.g. 1.0.x -> 1.1.0
+  npm run version:major   # e.g. 1.x.x -> 2.0.0
+  npm run version:patch   # e.g. 1.0.0 -> 1.0.1
+  ```
+
+To install onto your iPhone for free using a standard Apple ID with **[Sideloadly](https://sideloadly.io/)**, **[AltStore](https://altstore.io/)**, or **[SideStore](https://sidestore.io/)**:
+1. Download the latest `AussieSpecials-vX.Y.Z-bN.ipa` from your repo's **Releases** page on GitHub.
+2. Sideload onto your iPhone over USB via Sideloadly (or directly on-device via SideStore/AltStore), then trust your developer profile under **Settings → General → VPN & Device Management**.
 
 ### Option 2: Signed `.ipa` via Expo EAS Cloud Build (Paid Apple Developer Account)
 If you have a paid Apple Developer Program membership (\$99 USD/yr), run directly from PowerShell:

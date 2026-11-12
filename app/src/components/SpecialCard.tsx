@@ -16,11 +16,20 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
     const [imgError, setImgError] = useState(false);
     const storeTheme = STORE_THEMES[item.store] || STORE_THEMES.woolworths;
 
+    const isOnSale = Boolean(
+      item.isOnSale ??
+        (item.isHalfPrice ||
+          (item.saveAmount !== null && item.saveAmount > 0) ||
+          item.promoText)
+    );
+
     const badgeLabel = item.isHalfPrice
       ? item.discountPercent && item.discountPercent > 52
         ? `${item.discountPercent}% OFF`
         : '½ PRICE'
-      : item.promoText || 'SPECIAL';
+      : isOnSale
+      ? item.promoText || 'ON SALE'
+      : null;
 
     return (
       <Pressable
@@ -40,7 +49,7 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
             }}
             hitSlop={10}
             style={[styles.saveBtn, isSaved && styles.saveBtnActive]}
-            accessibilityLabel={isSaved ? 'Remove from saved specials' : 'Save special'}
+            accessibilityLabel={isSaved ? 'Remove from saved items' : 'Save item'}
           >
             <Ionicons
               name={isSaved ? 'bookmark' : 'bookmark-outline'}
@@ -65,23 +74,25 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
             </View>
           )}
 
-          {/* Promo / Half-Price Pill */}
-          <View
-            style={[
-              styles.promoPill,
-              item.isHalfPrice ? styles.promoPillHalf : styles.promoPillStandard,
-            ]}
-          >
-            <Text
-              numberOfLines={1}
+          {/* Promo / Half-Price Pill (only shown when item is on sale) */}
+          {badgeLabel && (
+            <View
               style={[
-                styles.promoPillText,
-                item.isHalfPrice ? styles.promoTextHalf : styles.promoTextStandard,
+                styles.promoPill,
+                item.isHalfPrice ? styles.promoPillHalf : styles.promoPillStandard,
               ]}
             >
-              {badgeLabel.toUpperCase()}
-            </Text>
-          </View>
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.promoPillText,
+                  item.isHalfPrice ? styles.promoTextHalf : styles.promoTextStandard,
+                ]}
+              >
+                {badgeLabel.toUpperCase()}
+              </Text>
+            </View>
+          )}
         </View>
 
         {/* Details */}
@@ -118,6 +129,18 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
                 {item.unitPrice}
               </Text>
             ) : null}
+          </View>
+
+          {/* Competitor Comparison Hint */}
+          <View style={styles.compareHintRow}>
+            <Ionicons
+              name="swap-horizontal-outline"
+              size={12}
+              color={COLORS.accent}
+            />
+            <Text style={styles.compareHintText} numberOfLines={1}>
+              Compare Amazon, Coles, Woolies…
+            </Text>
           </View>
         </View>
       </Pressable>
@@ -173,7 +196,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accentSoft,
   },
   imageBox: {
-    height: 126,
+    height: 124,
     paddingHorizontal: 12,
     paddingVertical: 6,
     alignItems: 'center',
@@ -224,7 +247,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 12,
     paddingTop: 6,
-    paddingBottom: 12,
+    paddingBottom: 10,
   },
   categoryLabel: {
     fontSize: 11,
@@ -274,5 +297,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.textSecondary,
     marginTop: 2,
+  },
+  compareHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 8,
+    paddingTop: 7,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.surfaceSubtle,
+  },
+  compareHintText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.accent,
   },
 });

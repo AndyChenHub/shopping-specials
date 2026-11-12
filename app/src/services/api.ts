@@ -1,11 +1,22 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { SortOption, SpecialsResponse, StoreFilter } from '../types/specials';
-import { downloadAllSpecialsOnDevice, fetchAldiDirect } from './directFetcher';
+import {
+  CompetitorQuote,
+  DealFilter,
+  SortOption,
+  SpecialItem,
+  SpecialsResponse,
+  StoreFilter,
+} from '../types/specials';
+import { downloadAllSpecialsOnDevice } from './directFetcher';
+import {
+  compareItemAcrossCompetitorsOnDevice,
+  searchAllCompetitorsLive,
+} from './competitorSearch';
 
 const CUSTOM_API_URL_KEY = '@aussie_specials_custom_api_url';
-const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v1';
+const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v2';
 const DEFAULT_BACKEND_PORT = 3001;
 
 export type DataSourceMode = 'on-device' | 'companion-server';
@@ -130,6 +141,7 @@ async function shouldTryCompanionServerFirst(): Promise<boolean> {
 export interface FetchSpecialsParams {
   store?: StoreFilter;
   category?: string;
+  dealFilter?: DealFilter;
   halfPrice?: boolean;
   q?: string;
   live?: boolean;
@@ -149,6 +161,9 @@ export async function fetchSpecials(
       if (params.category && params.category !== 'All') {
         query.set('category', params.category);
       }
+      if (params.dealFilter && params.dealFilter !== 'all') {
+        query.set('dealFilter', params.dealFilter);
+      }
       if (params.halfPrice) query.set('halfPrice', 'true');
       if (params.q?.trim()) query.set('q', params.q.trim());
       if (params.live) query.set('live', 'true');
@@ -163,7 +178,11 @@ export async function fetchSpecials(
       if (res.ok) {
         const json: SpecialsResponse = await res.json();
         lastActiveSource = 'companion-server';
-        if (!params.q && (!params.store || params.store === 'all')) {
+        if (
+          !params.q &&
+          (!params.store || params.store === 'all') &&
+          (!params.dealFilter || params.dealFilter === 'all')
+        ) {
           saveCachedFeedToDevice(json);
         }
         return json;
@@ -182,23 +201,34 @@ export async function fetchSpecials(
   lastActiveSource = 'on-device';
 
   if (params.live && params.q?.trim()) {
-    const liveAldi = await fetchAldiDirect(params.q.trim());
+    const liveItems = await searchAllCompetitorsLive(params.q.trim());
+    const statFor = (s: SpecialItem['store']) => {
+      const arr = liveItems.filter((i) => i.store === s);
+      return {
+        count: arr.length,
+        onSaleCount: arr.filter((i) => i.isOnSale).length,
+        halfPriceCount: arr.filter((i) => i.isHalfPrice).length,
+        status: 'ok',
+      };
+    };
     return {
-      items: liveAldi,
-      total: liveAldi.length,
+      items: liveItems,
+      total: liveItems.length,
       categories: [],
       storeStats: {
-        woolworths: { count: 0, halfPriceCount: 0, status: 'ok' },
-        coles: { count: 0, halfPriceCount: 0, status: 'ok' },
-        aldi: { count: liveAldi.length, halfPriceCount: 0, status: 'ok' },
+        woolworths: statFor('woolworths'),
+        coles: statFor('coles'),
+        aldi: statFor('aldi'),
+        iga: statFor('iga'),
+        amazon: statFor('amazon'),
       },
-      catalogues: { woolworths: null, coles: null, aldi: null },
+      catalogues: {},
       lastSyncedAt: new Date().toISOString(),
       syncStatus: 'ready',
     };
   }
 
-  // Return device cache if fresh (< 4 hours old), else download fresh catalogues on-device
+  // Return device cache if fresh (< 4 hours old), else download fresh catalogues + everyday items on-device
   const cached = await loadCachedFeedFromDevice();
   if (cached?.lastSyncedAt) {
     const ageMs = Date.now() - new Date(cached.lastSyncedAt).getTime();
@@ -210,6 +240,48 @@ export async function fetchSpecials(
   const fresh = await downloadAllSpecialsOnDevice();
   await saveCachedFeedToDevice(fresh);
   return fresh;
+}
+
+export async function compareCompetitorPrices(
+  item: SpecialItem
+): Promise<{ queryUsed: string; quotes: CompetitorQuote[] }> {
+  const tryServer = await shouldTryCompanionServerFirst();
+
+  if (tryServer) {
+    try {
+      const baseUrl = await getApiBaseUrl();
+      const timeout = Platform.OS === 'web' ? 18000 : 6500;
+      const res = await fetchWithTimeout(
+        `${baseUrl}/api/compare`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ item }),
+        },
+        timeout
+      );
+      if (res.ok) {
+        const json = (await res.json()) as {
+          queryUsed: string;
+          quotes: CompetitorQuote[];
+        };
+        if (json && Array.isArray(json.quotes)) {
+          lastActiveSource = 'companion-server';
+          return json;
+        }
+      }
+    } catch (err) {
+      if (Platform.OS === 'web') {
+        throw err instanceof Error
+          ? err
+          : new Error('Cannot reach companion server for competitor comparison');
+      }
+      // On native iOS, fall through seamlessly to direct on-device competitor fetching
+    }
+  }
+
+  lastActiveSource = 'on-device';
+  return compareItemAcrossCompetitorsOnDevice(item);
 }
 
 export async function triggerWebSync(): Promise<SpecialsResponse> {

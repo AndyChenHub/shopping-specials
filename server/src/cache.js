@@ -13,9 +13,10 @@ let memoryStore = {
   syncStatus: 'idle', // 'idle' | 'syncing' | 'ready' | 'error'
   lastError: null,
   storeStats: {
-    woolworths: { count: 0, halfPriceCount: 0, status: 'pending' },
-    coles: { count: 0, halfPriceCount: 0, status: 'pending' },
-    aldi: { count: 0, halfPriceCount: 0, status: 'pending' },
+    woolworths: { count: 0, onSaleCount: 0, halfPriceCount: 0, status: 'pending' },
+    coles: { count: 0, onSaleCount: 0, halfPriceCount: 0, status: 'pending' },
+    aldi: { count: 0, onSaleCount: 0, halfPriceCount: 0, status: 'pending' },
+    iga: { count: 0, onSaleCount: 0, halfPriceCount: 0, status: 'pending' },
   },
 };
 

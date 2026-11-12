@@ -8,11 +8,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../theme/colors';
+import { APP_VERSION_INFO } from '../services/versionChecker';
 
 interface HeaderBarProps {
   totalDeals: number;
   lastSyncedAt: string | null;
   syncing: boolean;
+  hasAppUpdate?: boolean;
   onSyncPress: () => void;
   onSettingsPress: () => void;
 }
@@ -33,6 +35,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   totalDeals,
   lastSyncedAt,
   syncing,
+  hasAppUpdate = false,
   onSyncPress,
   onSettingsPress,
 }) => {
@@ -44,10 +47,27 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
             <Ionicons name="pricetag" size={16} color="#FFFFFF" />
           </View>
           <Text style={styles.title}>Aussie Specials</Text>
+          <Pressable
+            onPress={onSettingsPress}
+            hitSlop={6}
+            style={[
+              styles.versionPill,
+              hasAppUpdate && styles.versionPillUpdate,
+            ]}
+          >
+            <Text
+              style={[
+                styles.versionPillText,
+                hasAppUpdate && styles.versionPillTextUpdate,
+              ]}
+            >
+              v{APP_VERSION_INFO.version}
+            </Text>
+          </Pressable>
         </View>
         <Text style={styles.subtitle} numberOfLines={1}>
-          {totalDeals > 0 ? `${totalDeals} specials • ` : ''}
-          {syncing ? 'Downloading catalogues from web…' : formatRelativeTime(lastSyncedAt)}
+          {totalDeals > 0 ? `${totalDeals} items • ` : ''}
+          {syncing ? 'Downloading items & specials…' : formatRelativeTime(lastSyncedAt)}
         </Text>
       </View>
 
@@ -73,9 +93,10 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         <Pressable
           onPress={onSettingsPress}
           style={({ pressed }) => [styles.iconButton, pressed && styles.buttonPressed]}
-          accessibilityLabel="Server connection settings"
+          accessibilityLabel="App version and settings"
         >
-          <Ionicons name="server-outline" size={19} color={COLORS.textSecondary} />
+          <Ionicons name="settings-outline" size={19} color={COLORS.textSecondary} />
+          {hasAppUpdate && <View style={styles.updateDot} />}
         </Pressable>
       </View>
     </View>
@@ -99,7 +120,7 @@ const styles = StyleSheet.create({
   brandRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
   },
   logoBadge: {
     width: 28,
@@ -110,10 +131,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: '800',
     color: COLORS.textPrimary,
     letterSpacing: -0.4,
+  },
+  versionPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: COLORS.surfaceSubtle,
+  },
+  versionPillUpdate: {
+    backgroundColor: COLORS.accentSoft,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  versionPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textSecondary,
+  },
+  versionPillTextUpdate: {
+    color: COLORS.accent,
   },
   subtitle: {
     marginTop: 3,
@@ -150,6 +190,18 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.surfaceSubtle,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  updateDot: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: COLORS.accent,
+    borderWidth: 1.5,
+    borderColor: COLORS.surface,
   },
   buttonPressed: {
     opacity: 0.7,

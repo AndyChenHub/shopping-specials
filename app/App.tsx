@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, STORE_THEMES } from './src/theme/colors';
 import {
   CatalogueInfo,
+  DealFilter,
   SortOption,
   SpecialItem,
   StoreFilter,
@@ -32,6 +33,10 @@ import {
   loadSavedSpecials,
   persistSavedSpecials,
 } from './src/services/savedStorage';
+import {
+  checkLatestIpaRelease,
+  IpaReleaseCheckResult,
+} from './src/services/versionChecker';
 import { HeaderBar } from './src/components/HeaderBar';
 import { FilterBar } from './src/components/FilterBar';
 import { SpecialCard } from './src/components/SpecialCard';
@@ -64,10 +69,12 @@ function MainApp() {
   const [allItems, setAllItems] = useState<SpecialItem[]>([]);
   const [liveExtraItems, setLiveExtraItems] = useState<SpecialItem[]>([]);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
-  const [storeStats, setStoreStats] = useState<Record<StoreId, StoreStat> | null>(null);
-  const [catalogues, setCatalogues] = useState<Record<StoreId, CatalogueInfo | null> | null>(
-    null
-  );
+  const [storeStats, setStoreStats] = useState<
+    Partial<Record<StoreId, StoreStat>> | null
+  >(null);
+  const [catalogues, setCatalogues] = useState<
+    Partial<Record<StoreId, CatalogueInfo | null>> | null
+  >(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
 
   // Loading & error state
@@ -79,7 +86,7 @@ function MainApp() {
   // Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedStore, setSelectedStore] = useState<StoreFilter>('all');
-  const [halfPriceOnly, setHalfPriceOnly] = useState<boolean>(false);
+  const [dealFilter, setDealFilter] = useState<DealFilter>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<SortOption>('featured');
 
@@ -87,6 +94,29 @@ function MainApp() {
   const [savedItems, setSavedItems] = useState<SpecialItem[]>([]);
   const [detailItem, setDetailItem] = useState<SpecialItem | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(false);
+
+  // IPA Release version checker
+  const [releaseCheck, setReleaseCheck] =
+    useState<IpaReleaseCheckResult | null>(null);
+  const [checkingRelease, setCheckingRelease] = useState<boolean>(false);
+  const [updateBannerDismissed, setUpdateBannerDismissed] =
+    useState<boolean>(false);
+
+  const runReleaseCheck = useCallback(async () => {
+    try {
+      setCheckingRelease(true);
+      const res = await checkLatestIpaRelease();
+      setReleaseCheck(res);
+    } catch {
+      // Ignore offline check errors silently
+    } finally {
+      setCheckingRelease(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    runReleaseCheck();
+  }, [runReleaseCheck]);
 
   const savedIdSet = useMemo(
     () => new Set(savedItems.map((i) => i.id)),
@@ -180,22 +210,91 @@ function MainApp() {
     persistSavedSpecials([]);
   }, []);
 
-  // Instant client-side filtering & sorting across all downloaded specials
-  const filteredItems = useMemo(() => {
-    const combined =
-      searchQuery.trim() && liveExtraItems.length > 0
-        ? [...allItems, ...liveExtraItems]
-        : allItems;
+  const isItemOnSale = useCallback((item: SpecialItem): boolean => {
+    return Boolean(
+      item.isOnSale ??
+        (item.isHalfPrice ||
+          (item.saveAmount !== null && item.saveAmount > 0) ||
+          item.promoText)
+    );
+  }, []);
 
+  const combinedItems = useMemo(() => {
+    return searchQuery.trim() && liveExtraItems.length > 0
+      ? [...liveExtraItems, ...allItems]
+      : allItems;
+  }, [allItems, liveExtraItems, searchQuery]);
+
+  // Dynamic counts for All Items / On Sale / ½ Price and Amazon live search pills
+  const filterCounts = useMemo(() => {
     const tokens = searchQuery
       .trim()
       .toLowerCase()
       .split(/\s+/)
       .filter(Boolean);
 
-    const matches = combined.filter((item) => {
+    const searchAndCatPool = combinedItems.filter((item) => {
+      if (selectedCategory !== 'All' && item.category !== selectedCategory) {
+        return false;
+      }
+      if (tokens.length > 0) {
+        const hay = `${item.title} ${item.brand || ''} ${item.category} ${
+          item.promoText || ''
+        } ${item.storeName}`.toLowerCase();
+        if (!tokens.every((t) => hay.includes(t))) return false;
+      }
+      return true;
+    });
+
+    const amazonCount = searchAndCatPool.filter((i) => i.store === 'amazon').length;
+    const storeScoped =
+      selectedStore === 'all'
+        ? searchAndCatPool
+        : searchAndCatPool.filter((i) => i.store === selectedStore);
+
+    const effectiveStats: Partial<Record<StoreId, StoreStat>> = {
+      ...(storeStats || {}),
+    };
+    if (tokens.length > 0 || selectedCategory !== 'All') {
+      for (const st of ['woolworths', 'coles', 'aldi', 'iga', 'amazon'] as StoreId[]) {
+        const list = searchAndCatPool.filter((i) => i.store === st);
+        effectiveStats[st] = {
+          count: list.length,
+          onSaleCount: list.filter(isItemOnSale).length,
+          halfPriceCount: list.filter((i) => i.isHalfPrice).length,
+          status: 'ok',
+        };
+      }
+    }
+
+    return {
+      totalItemsCount: storeScoped.length,
+      totalOnSaleCount: storeScoped.filter(isItemOnSale).length,
+      totalHalfPriceCount: storeScoped.filter((i) => i.isHalfPrice).length,
+      amazonCount,
+      effectiveStats,
+    };
+  }, [
+    combinedItems,
+    searchQuery,
+    selectedCategory,
+    selectedStore,
+    storeStats,
+    isItemOnSale,
+  ]);
+
+  // Instant client-side filtering & sorting across all downloaded items & specials
+  const filteredItems = useMemo(() => {
+    const tokens = searchQuery
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+
+    const matches = combinedItems.filter((item) => {
       if (selectedStore !== 'all' && item.store !== selectedStore) return false;
-      if (halfPriceOnly && !item.isHalfPrice) return false;
+      if (dealFilter === 'half_price' && !item.isHalfPrice) return false;
+      if (dealFilter === 'sale' && !isItemOnSale(item)) return false;
       if (selectedCategory !== 'All' && item.category !== selectedCategory) {
         return false;
       }
@@ -223,13 +322,13 @@ function MainApp() {
       return 0;
     });
   }, [
-    allItems,
-    liveExtraItems,
+    combinedItems,
     searchQuery,
     selectedStore,
-    halfPriceOnly,
+    dealFilter,
     selectedCategory,
     sortBy,
+    isItemOnSale,
   ]);
 
   // Active store catalogue validity banner when viewing a single supermarket
@@ -249,9 +348,35 @@ function MainApp() {
         totalDeals={allItems.length}
         lastSyncedAt={lastSyncedAt}
         syncing={refreshing}
+        hasAppUpdate={Boolean(releaseCheck?.hasUpdate)}
         onSyncPress={handleSyncFromWeb}
         onSettingsPress={() => setSettingsOpen(true)}
       />
+
+      {releaseCheck?.hasUpdate && !updateBannerDismissed && (
+        <View style={styles.updateBanner}>
+          <View style={styles.updateBannerLeft}>
+            <Ionicons name="sparkles" size={16} color={COLORS.accent} />
+            <Text style={styles.updateBannerText} numberOfLines={1}>
+              New iOS .ipa {releaseCheck.latestTag} is ready to download
+            </Text>
+          </View>
+          <View style={styles.updateBannerActions}>
+            <Pressable
+              onPress={() => setSettingsOpen(true)}
+              style={styles.updateBannerBtn}
+            >
+              <Text style={styles.updateBannerBtnText}>Update</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setUpdateBannerDismissed(true)}
+              hitSlop={8}
+            >
+              <Ionicons name="close" size={18} color={COLORS.textSecondary} />
+            </Pressable>
+          </View>
+        </View>
+      )}
 
       {activeTab === 'browse' ? (
         <>
@@ -265,14 +390,18 @@ function MainApp() {
             liveSearching={liveSearching}
             selectedStore={selectedStore}
             onStoreChange={setSelectedStore}
-            halfPriceOnly={halfPriceOnly}
-            onToggleHalfPrice={() => setHalfPriceOnly((v) => !v)}
+            dealFilter={dealFilter}
+            onDealFilterChange={setDealFilter}
+            totalItemsCount={filterCounts.totalItemsCount}
+            totalOnSaleCount={filterCounts.totalOnSaleCount}
+            totalHalfPriceCount={filterCounts.totalHalfPriceCount}
+            amazonCount={filterCounts.amazonCount}
             selectedCategory={selectedCategory}
             onCategoryChange={setSelectedCategory}
             categories={categories}
             sortBy={sortBy}
             onSortChange={setSortBy}
-            storeStats={storeStats}
+            storeStats={filterCounts.effectiveStats}
           />
 
           {errorMsg && (
@@ -282,7 +411,7 @@ function MainApp() {
                 <Text style={styles.errorText} numberOfLines={2}>
                   {Platform.OS === 'web'
                     ? `Cannot reach backend (${errorMsg}). Ensure npm run server is running.`
-                    : `Could not sync specials (${errorMsg}). Check connection and retry.`}
+                    : `Could not sync items (${errorMsg}). Check connection and retry.`}
                 </Text>
               </View>
               <Pressable onPress={loadCataloguesFromServer} style={styles.retryBtn}>
@@ -295,10 +424,10 @@ function MainApp() {
             <View style={styles.centerState}>
               <ActivityIndicator size="large" color={COLORS.accent} />
               <Text style={styles.loadingTitle}>
-                Downloading Supermarket Specials…
+                Downloading Products & Weekly Specials…
               </Text>
               <Text style={styles.loadingSubtitle}>
-                Fetching weekly catalogues from Woolworths, Coles & ALDI
+                Fetching items & sales from Woolworths, Coles, ALDI & IGA
               </Text>
             </View>
           ) : (
@@ -347,23 +476,25 @@ function MainApp() {
                   )}
                   <Text style={styles.resultsCountText}>
                     Showing {filteredItems.length}{' '}
-                    {filteredItems.length === 1 ? 'special' : 'specials'}
-                    {halfPriceOnly ? ' • ½ Price filter active' : ''}
+                    {filteredItems.length === 1 ? 'item' : 'items'}
+                    {dealFilter === 'sale' ? ' • On Sale filter active' : ''}
+                    {dealFilter === 'half_price' ? ' • ½ Price filter active' : ''}
+                    {' • Tap any item to compare prices'}
                   </Text>
                 </View>
               }
               ListEmptyComponent={
                 <View style={styles.emptySearchWrap}>
                   <Ionicons name="search-outline" size={40} color={COLORS.textMuted} />
-                  <Text style={styles.emptySearchTitle}>No matching specials</Text>
+                  <Text style={styles.emptySearchTitle}>No matching items</Text>
                   <Text style={styles.emptySearchSub}>
-                    Try clearing a filter or tap "Web Search" to query live supermarket
-                    feeds.
+                    Try clearing a filter or tap "Live Search" to search across Amazon
+                    AU, Woolworths, Coles, ALDI & IGA.
                   </Text>
                   <Pressable
                     onPress={() => {
                       setSelectedStore('all');
-                      setHalfPriceOnly(false);
+                      setDealFilter('all');
                       setSelectedCategory('All');
                       setSearchQuery('');
                     }}
@@ -403,7 +534,7 @@ function MainApp() {
             style={styles.tabItem}
           >
             <Ionicons
-              name={activeTab === 'browse' ? 'pricetags' : 'pricetags-outline'}
+              name={activeTab === 'browse' ? 'grid' : 'grid-outline'}
               size={22}
               color={activeTab === 'browse' ? COLORS.accent : COLORS.textMuted}
             />
@@ -413,7 +544,7 @@ function MainApp() {
                 activeTab === 'browse' && styles.tabLabelActive,
               ]}
             >
-              Specials
+              Browse
             </Text>
           </Pressable>
 
@@ -454,6 +585,9 @@ function MainApp() {
 
       <ServerSettingsModal
         visible={settingsOpen}
+        releaseCheck={releaseCheck}
+        checkingRelease={checkingRelease}
+        onCheckRelease={runReleaseCheck}
         onClose={() => setSettingsOpen(false)}
         onSaved={loadCataloguesFromServer}
       />
@@ -473,6 +607,45 @@ const styles = StyleSheet.create({
   safeRoot: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.accentSoft,
+    borderBottomWidth: 1,
+    borderBottomColor: '#C5D9FC',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    gap: 10,
+  },
+  updateBannerLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  updateBannerText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  updateBannerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  updateBannerBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4.5,
+    borderRadius: 999,
+    backgroundColor: COLORS.accent,
+  },
+  updateBannerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 11.5,
+    fontWeight: '800',
   },
   errorBanner: {
     flexDirection: 'row',

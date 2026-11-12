@@ -10,7 +10,13 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, STORE_THEMES } from '../theme/colors';
-import { SortOption, StoreFilter, StoreId, StoreStat } from '../types/specials';
+import {
+  DealFilter,
+  SortOption,
+  StoreFilter,
+  StoreId,
+  StoreStat,
+} from '../types/specials';
 
 interface FilterBarProps {
   searchQuery: string;
@@ -19,21 +25,25 @@ interface FilterBarProps {
   liveSearching: boolean;
   selectedStore: StoreFilter;
   onStoreChange: (store: StoreFilter) => void;
-  halfPriceOnly: boolean;
-  onToggleHalfPrice: () => void;
+  dealFilter: DealFilter;
+  onDealFilterChange: (filter: DealFilter) => void;
+  totalItemsCount: number;
+  totalOnSaleCount: number;
+  totalHalfPriceCount: number;
+  amazonCount?: number;
   selectedCategory: string;
   onCategoryChange: (cat: string) => void;
   categories: string[];
   sortBy: SortOption;
   onSortChange: (sort: SortOption) => void;
-  storeStats: Record<StoreId, StoreStat> | null;
+  storeStats: Partial<Record<StoreId, StoreStat>> | null;
 }
 
 const SORT_OPTIONS: { key: SortOption; label: string }[] = [
   { key: 'featured', label: 'Featured' },
+  { key: 'price_asc', label: 'Lowest Price' },
   { key: 'discount', label: 'Biggest % Off' },
   { key: 'savings', label: 'Most $ Saved' },
-  { key: 'price_asc', label: 'Lowest Price' },
 ];
 
 export const FilterBar: React.FC<FilterBarProps> = ({
@@ -43,8 +53,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   liveSearching,
   selectedStore,
   onStoreChange,
-  halfPriceOnly,
-  onToggleHalfPrice,
+  dealFilter,
+  onDealFilterChange,
+  totalItemsCount,
+  totalOnSaleCount,
+  totalHalfPriceCount,
+  amazonCount = 0,
   selectedCategory,
   onCategoryChange,
   categories,
@@ -52,22 +66,16 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onSortChange,
   storeStats,
 }) => {
-  const totalAll = storeStats
+  const totalAllStores = storeStats
     ? (storeStats.woolworths?.count || 0) +
       (storeStats.coles?.count || 0) +
-      (storeStats.aldi?.count || 0)
-    : 0;
-
-  const totalHalfPrice = storeStats
-    ? selectedStore === 'all'
-      ? (storeStats.woolworths?.halfPriceCount || 0) +
-        (storeStats.coles?.halfPriceCount || 0) +
-        (storeStats.aldi?.halfPriceCount || 0)
-      : storeStats[selectedStore]?.halfPriceCount || 0
-    : 0;
+      (storeStats.aldi?.count || 0) +
+      (storeStats.iga?.count || 0) +
+      amazonCount
+    : totalItemsCount;
 
   const storeOptions: { id: StoreFilter; label: string; count: number; color: string }[] = [
-    { id: 'all', label: 'All Stores', count: totalAll, color: COLORS.textPrimary },
+    { id: 'all', label: 'All Stores', count: totalAllStores, color: COLORS.textPrimary },
     {
       id: 'woolworths',
       label: 'Woolworths',
@@ -86,7 +94,22 @@ export const FilterBar: React.FC<FilterBarProps> = ({
       count: storeStats?.aldi?.count || 0,
       color: STORE_THEMES.aldi.primary,
     },
+    {
+      id: 'iga',
+      label: 'IGA',
+      count: storeStats?.iga?.count || 0,
+      color: STORE_THEMES.iga.primary,
+    },
   ];
+
+  if (amazonCount > 0 || selectedStore === 'amazon') {
+    storeOptions.push({
+      id: 'amazon',
+      label: 'Amazon AU',
+      count: amazonCount,
+      color: STORE_THEMES.amazon.primary,
+    });
+  }
 
   return (
     <View style={styles.wrapper}>
@@ -96,7 +119,7 @@ export const FilterBar: React.FC<FilterBarProps> = ({
         <TextInput
           value={searchQuery}
           onChangeText={onSearchChange}
-          placeholder="Search specials (e.g. milk, Tim Tam, coffee, chicken)…"
+          placeholder="Search any item (e.g. Nutella, milk, Tim Tam, Panadol)…"
           placeholderTextColor={COLORS.textMuted}
           style={styles.searchInput}
           returnKeyType="search"
@@ -127,13 +150,107 @@ export const FilterBar: React.FC<FilterBarProps> = ({
               ) : (
                 <>
                   <Ionicons name="globe-outline" size={13} color="#FFFFFF" />
-                  <Text style={styles.webSearchText}>Web Search</Text>
+                  <Text style={styles.webSearchText}>Live Search</Text>
                 </>
               )}
             </Pressable>
           </>
         )}
       </View>
+
+      {/* Browse All vs Filter by Sales + Sort Row */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.horizontalRow}
+      >
+        {/* All Items */}
+        <Pressable
+          onPress={() => onDealFilterChange('all')}
+          style={[
+            styles.dealModeChip,
+            dealFilter === 'all' ? styles.dealModeAllActive : styles.dealModeInactive,
+          ]}
+        >
+          <Ionicons
+            name="grid-outline"
+            size={13}
+            color={dealFilter === 'all' ? '#FFFFFF' : COLORS.textSecondary}
+          />
+          <Text
+            style={[
+              styles.dealModeText,
+              dealFilter === 'all' && styles.dealModeTextLight,
+            ]}
+          >
+            All Items{totalItemsCount > 0 ? ` (${totalItemsCount})` : ''}
+          </Text>
+        </Pressable>
+
+        {/* On Sale */}
+        <Pressable
+          onPress={() =>
+            onDealFilterChange(dealFilter === 'sale' ? 'all' : 'sale')
+          }
+          style={[
+            styles.dealModeChip,
+            dealFilter === 'sale' ? styles.dealModeSaleActive : styles.dealModeSaleInactive,
+          ]}
+        >
+          <Ionicons
+            name={dealFilter === 'sale' ? 'pricetag' : 'pricetag-outline'}
+            size={13}
+            color={dealFilter === 'sale' ? '#FFFFFF' : COLORS.savingsText}
+          />
+          <Text
+            style={[
+              styles.dealModeSaleText,
+              dealFilter === 'sale' && styles.dealModeTextLight,
+            ]}
+          >
+            On Sale{totalOnSaleCount > 0 ? ` (${totalOnSaleCount})` : ''}
+          </Text>
+        </Pressable>
+
+        {/* Half Price */}
+        <Pressable
+          onPress={() =>
+            onDealFilterChange(dealFilter === 'half_price' ? 'all' : 'half_price')
+          }
+          style={[
+            styles.halfPriceToggle,
+            dealFilter === 'half_price'
+              ? styles.halfPriceToggleActive
+              : styles.halfPriceToggleInactive,
+          ]}
+        >
+          <Ionicons
+            name={dealFilter === 'half_price' ? 'flash' : 'flash-outline'}
+            size={14}
+            color={COLORS.halfPriceText}
+          />
+          <Text style={styles.halfPriceToggleText}>
+            ½ Price{totalHalfPriceCount > 0 ? ` (${totalHalfPriceCount})` : ''}
+          </Text>
+        </Pressable>
+
+        <View style={styles.divider} />
+
+        {SORT_OPTIONS.map((opt) => {
+          const active = sortBy === opt.key;
+          return (
+            <Pressable
+              key={opt.key}
+              onPress={() => onSortChange(opt.key)}
+              style={[styles.sortChip, active && styles.sortChipActive]}
+            >
+              <Text style={[styles.sortChipText, active && styles.sortChipTextActive]}>
+                {opt.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
 
       {/* Store Filter Pills */}
       <ScrollView
@@ -182,47 +299,6 @@ export const FilterBar: React.FC<FilterBarProps> = ({
                   </Text>
                 </View>
               )}
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-
-      {/* Half-Price Toggle + Sort Row */}
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.horizontalRow}
-      >
-        <Pressable
-          onPress={onToggleHalfPrice}
-          style={[
-            styles.halfPriceToggle,
-            halfPriceOnly ? styles.halfPriceToggleActive : styles.halfPriceToggleInactive,
-          ]}
-        >
-          <Ionicons
-            name={halfPriceOnly ? 'flash' : 'flash-outline'}
-            size={14}
-            color={COLORS.halfPriceText}
-          />
-          <Text style={styles.halfPriceToggleText}>
-            ½ Price{totalHalfPrice > 0 ? ` (${totalHalfPrice})` : ''}
-          </Text>
-        </Pressable>
-
-        <View style={styles.divider} />
-
-        {SORT_OPTIONS.map((opt) => {
-          const active = sortBy === opt.key;
-          return (
-            <Pressable
-              key={opt.key}
-              onPress={() => onSortChange(opt.key)}
-              style={[styles.sortChip, active && styles.sortChipActive]}
-            >
-              <Text style={[styles.sortChipText, active && styles.sortChipTextActive]}>
-                {opt.label}
-              </Text>
             </Pressable>
           );
         })}
@@ -301,6 +377,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  dealModeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6.5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  dealModeAllActive: {
+    backgroundColor: COLORS.accent,
+    borderColor: COLORS.accent,
+  },
+  dealModeInactive: {
+    backgroundColor: COLORS.surface,
+    borderColor: COLORS.border,
+  },
+  dealModeSaleActive: {
+    backgroundColor: COLORS.savingsText,
+    borderColor: COLORS.savingsText,
+  },
+  dealModeSaleInactive: {
+    backgroundColor: COLORS.savingsBg,
+    borderColor: '#CBEBD6',
+  },
+  dealModeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  dealModeSaleText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.savingsText,
+  },
+  dealModeTextLight: {
+    color: '#FFFFFF',
+  },
   storePill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -352,10 +466,10 @@ const styles = StyleSheet.create({
   },
   halfPriceToggleActive: {
     backgroundColor: COLORS.halfPriceBg,
-    borderColor: '#E0B400',
+    borderColor: '#D4A800',
   },
   halfPriceToggleInactive: {
-    backgroundColor: '#FFF9DB',
+    backgroundColor: '#FFFBEB',
     borderColor: '#F3D75B',
   },
   halfPriceToggleText: {

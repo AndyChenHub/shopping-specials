@@ -1,43 +1,83 @@
 import { fetchSaleFinderStoreSpecials } from './salefinder.js';
 import { fetchAldiSpecials } from './aldi.js';
+import {
+  searchWoolworthsProducts,
+  searchColesProducts,
+  searchAldiProducts,
+  searchIgaProducts,
+  searchAmazonAuProducts,
+  compareItemAcrossCompetitors,
+} from './competitors.js';
 import { saveCacheToDisk, getStoreState, setSyncStatus } from '../cache.js';
 
 let activeSyncPromise = null;
 
-/**
- * Interleave/rank specials so browsing "All Stores" shows a rich mix of
- * half-price deals and top specials across Woolworths, Coles, and ALDI.
- */
-function sortAndInterleave(woolworthsItems, colesItems, aldiItems) {
-  const rankStoreItems = (arr) =>
-    [...arr].sort((a, b) => {
-      if (a.isHalfPrice !== b.isHalfPrice) return a.isHalfPrice ? -1 : 1;
-      const discA = a.discountPercent || 0;
-      const discB = b.discountPercent || 0;
-      if (discB !== discA) return discB - discA;
-      const saveA = a.saveAmount || 0;
-      const saveB = b.saveAmount || 0;
-      return saveB - saveA;
-    });
+const EVERYDAY_STAPLES = [
+  'milk',
+  'bread',
+  'eggs',
+  'chicken breast',
+  'coffee',
+  'pasta',
+  'cheese',
+  'biscuits',
+];
 
-  const w = rankStoreItems(woolworthsItems);
-  const c = rankStoreItems(colesItems);
-  const a = rankStoreItems(aldiItems);
+async function fetchEverydayRange() {
+  const wwMap = new Map();
+  const colesMap = new Map();
+  const igaMap = new Map();
 
-  const maxLen = Math.max(w.length, c.length, a.length);
+  await Promise.allSettled(
+    EVERYDAY_STAPLES.map(async (term) => {
+      const [ww, cl, ig] = await Promise.allSettled([
+        searchWoolworthsProducts(term, 6),
+        searchColesProducts(term, 6),
+        searchIgaProducts(term, 6),
+      ]);
+      if (ww.status === 'fulfilled') {
+        for (const item of ww.value) wwMap.set(item.id, item);
+      }
+      if (cl.status === 'fulfilled') {
+        for (const item of cl.value) colesMap.set(item.id, item);
+      }
+      if (ig.status === 'fulfilled') {
+        for (const item of ig.value) igaMap.set(item.id, item);
+      }
+    })
+  );
+
+  return {
+    woolworths: Array.from(wwMap.values()),
+    coles: Array.from(colesMap.values()),
+    iga: Array.from(igaMap.values()),
+  };
+}
+
+function dedupeStoreList(list) {
+  const map = new Map();
+  for (const item of list) {
+    const key = `${item.store}-${String(item.title).toLowerCase().slice(0, 38)}`;
+    if (!map.has(key)) map.set(key, item);
+  }
+  return Array.from(map.values());
+}
+
+function interleaveLists(lists) {
+  const maxLen = Math.max(...lists.map((l) => l.length), 0);
   const combined = [];
   for (let i = 0; i < maxLen; i++) {
-    if (i < w.length) combined.push(w[i]);
-    if (i < c.length) combined.push(c[i]);
-    if (i < a.length) combined.push(a[i]);
+    for (const list of lists) {
+      if (i < list.length) combined.push(list[i]);
+    }
   }
   return combined;
 }
 
 /**
- * Search the web & download latest specials from Woolworths, Coles, and ALDI.
+ * Search the web & download everyday items + weekly specials from Woolworths, Coles, ALDI & IGA.
  */
-export async function syncAllSupermarkets({ maxPagesPerCatalogue = 15 } = {}) {
+export async function syncAllSupermarkets({ maxPagesPerCatalogue = 12 } = {}) {
   if (activeSyncPromise) {
     return activeSyncPromise;
   }
@@ -46,23 +86,38 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 15 } = {}) {
     setSyncStatus('syncing');
     const prevState = getStoreState();
 
-    const [wwRes, colesRes, aldiRes] = await Promise.allSettled([
+    const [wwRes, colesRes, aldiRes, everydayRes] = await Promise.allSettled([
       fetchSaleFinderStoreSpecials('woolworths', { maxPages: maxPagesPerCatalogue }),
       fetchSaleFinderStoreSpecials('coles', { maxPages: maxPagesPerCatalogue }),
       fetchAldiSpecials(),
+      fetchEverydayRange(),
     ]);
 
     const prevByStore = (store) =>
       (prevState.items || []).filter((item) => item.store === store);
 
-    const woolworthsItems =
+    const everyday =
+      everydayRes.status === 'fulfilled'
+        ? everydayRes.value
+        : { woolworths: [], coles: [], iga: [] };
+
+    const wwCatItems =
       wwRes.status === 'fulfilled' && wwRes.value.items.length > 0
         ? wwRes.value.items
+        : [];
+    const colesCatItems =
+      colesRes.status === 'fulfilled' && colesRes.value.items.length > 0
+        ? colesRes.value.items
+        : [];
+
+    const woolworthsItems =
+      wwCatItems.length + everyday.woolworths.length > 0
+        ? dedupeStoreList([...everyday.woolworths, ...wwCatItems])
         : prevByStore('woolworths');
 
     const colesItems =
-      colesRes.status === 'fulfilled' && colesRes.value.items.length > 0
-        ? colesRes.value.items
+      colesCatItems.length + everyday.coles.length > 0
+        ? dedupeStoreList([...everyday.coles, ...colesCatItems])
         : prevByStore('coles');
 
     const aldiItems =
@@ -70,7 +125,15 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 15 } = {}) {
         ? aldiRes.value
         : prevByStore('aldi');
 
-    const combined = sortAndInterleave(woolworthsItems, colesItems, aldiItems);
+    const igaItems =
+      everyday.iga.length > 0 ? dedupeStoreList(everyday.iga) : prevByStore('iga');
+
+    const combined = interleaveLists([
+      woolworthsItems,
+      colesItems,
+      aldiItems,
+      igaItems,
+    ]);
 
     const catalogues = {
       woolworths:
@@ -82,30 +145,28 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 15 } = {}) {
           ? colesRes.value.catalogue
           : prevState.catalogues?.coles || null,
       aldi: {
-        name: 'ALDI Special Buys & Super Savers',
-        validDates: 'Updated Wed & Sat • While Stocks Last',
+        name: 'ALDI Everyday Range & Special Buys',
+        validDates: 'Updated Wed & Sat • Everyday Low Prices',
+      },
+      iga: {
+        name: 'IGA Everyday & Price Match',
+        validDates: 'Current Store Prices & Specials',
       },
     };
 
+    const buildStat = (arr, status = 'ok') => ({
+      count: arr.length,
+      onSaleCount: arr.filter((i) => i.isOnSale).length,
+      halfPriceCount: arr.filter((i) => i.isHalfPrice).length,
+      status,
+      error: null,
+    });
+
     const storeStats = {
-      woolworths: {
-        count: woolworthsItems.length,
-        halfPriceCount: woolworthsItems.filter((i) => i.isHalfPrice).length,
-        status: wwRes.status === 'fulfilled' ? 'ok' : 'cached',
-        error: wwRes.status === 'rejected' ? wwRes.reason?.message : null,
-      },
-      coles: {
-        count: colesItems.length,
-        halfPriceCount: colesItems.filter((i) => i.isHalfPrice).length,
-        status: colesRes.status === 'fulfilled' ? 'ok' : 'cached',
-        error: colesRes.status === 'rejected' ? colesRes.reason?.message : null,
-      },
-      aldi: {
-        count: aldiItems.length,
-        halfPriceCount: aldiItems.filter((i) => i.isHalfPrice).length,
-        status: aldiRes.status === 'fulfilled' ? 'ok' : 'cached',
-        error: aldiRes.status === 'rejected' ? aldiRes.reason?.message : null,
-      },
+      woolworths: buildStat(woolworthsItems),
+      coles: buildStat(colesItems),
+      aldi: buildStat(aldiItems),
+      iga: buildStat(igaItems),
     };
 
     await saveCacheToDisk({
@@ -131,33 +192,41 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 15 } = {}) {
 }
 
 /**
- * Perform a live query combining downloaded Woolworths/Coles/ALDI catalogue deals
- * with live ALDI web search results for items not yet in cache.
+ * Live search across cached items + live Woolworths, Coles, ALDI, IGA & Amazon AU feeds!
  */
 export async function searchSpecialsLive(query) {
-  const q = String(query || '').trim().toLowerCase();
+  const q = String(query || '').trim();
   const state = getStoreState();
   if (!q) return state.items;
 
-  const tokens = q.split(/\s+/).filter(Boolean);
+  const settled = await Promise.allSettled([
+    searchWoolworthsProducts(q, 10),
+    searchColesProducts(q, 10),
+    searchAldiProducts(q, 12),
+    searchIgaProducts(q, 8),
+    searchAmazonAuProducts(q, 6),
+  ]);
+
+  const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
+  const liveInterleaved = interleaveLists(lists);
+
+  const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
   const localMatches = (state.items || []).filter((item) => {
-    const hay = `${item.title} ${item.brand || ''} ${item.category} ${item.promoText || ''} ${item.storeName}`.toLowerCase();
+    const hay = `${item.title} ${item.brand || ''} ${item.category} ${
+      item.promoText || ''
+    } ${item.storeName}`.toLowerCase();
     return tokens.every((t) => hay.includes(t));
   });
 
-  // Also query ALDI live search endpoint to catch extra matching specials on the web
-  try {
-    const liveAldi = await fetchAldiSpecials({ searchQuery: q });
-    const existingIds = new Set(localMatches.map((i) => i.id));
-    for (const item of liveAldi) {
-      if (!existingIds.has(item.id)) {
-        localMatches.push(item);
-        existingIds.add(item.id);
-      }
+  const out = [];
+  const seen = new Set();
+  for (const item of [...liveInterleaved, ...localMatches]) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      out.push(item);
     }
-  } catch {
-    // Graceful fallback to cached catalogue search
   }
-
-  return localMatches;
+  return out;
 }
+
+export { compareItemAcrossCompetitors };

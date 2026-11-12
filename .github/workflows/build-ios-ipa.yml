@@ -7,22 +7,28 @@ on:
       - main
     paths:
       - 'app/**'
+      - 'scripts/**'
       - '.github/workflows/build-ios-ipa.yml'
-  release:
-    types: [published]
 
 permissions:
   contents: write
 
+concurrency:
+  group: build-ios-ipa
+  cancel-in-progress: false
+
 jobs:
   build-ipa:
-    name: Build Unsigned iOS .ipa (macOS + Xcode)
+    name: Build & Release Versioned iOS .ipa
     runs-on: macos-latest
     timeout-minutes: 45
+    if: "!contains(github.event.head_commit.message || '', '[skip ci]')"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository with full history & tags
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v4
@@ -30,6 +36,12 @@ jobs:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: app/package-lock.json
+
+      - name: Prepare next semantic version & build number
+        id: ver
+        run: |
+          git fetch --tags --force
+          node app/scripts/prepare-release-version.mjs
 
       - name: Check Xcode version
         run: xcodebuild -version
@@ -44,18 +56,26 @@ jobs:
 
       - name: Build native iOS Release .ipa
         working-directory: app
+        env:
+          IPA_FILENAME: ${{ steps.ver.outputs.ipa_filename }}
         run: bash scripts/build-ipa.sh
 
-      - name: Upload AussieSpecials.ipa Artifact
+      - name: Upload Versioned .ipa Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AussieSpecials-iOS-ipa
-          path: app/AussieSpecials.ipa
+          name: ${{ format('AussieSpecials-{0}-b{1}', steps.ver.outputs.tag_name, steps.ver.outputs.build_number) }}
+          path: |
+            app/${{ steps.ver.outputs.ipa_filename }}
+            app/${{ steps.ver.outputs.ipa_filename }}.sha256
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
 
-      - name: Attach .ipa to GitHub Release
-        if: github.event_name == 'release'
+      - name: Commit version bump & publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" app/AussieSpecials.ipa --clobber
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_NUMBER: ${{ steps.ver.outputs.build_number }}
+          TAG_NAME: ${{ steps.ver.outputs.tag_name }}
+          IPA_FILENAME: ${{ steps.ver.outputs.ipa_filename }}
+          GIT_SHA: ${{ steps.ver.outputs.git_sha }}
+        run: bash app/scripts/publish-github-release.sh

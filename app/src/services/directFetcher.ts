@@ -10,6 +10,11 @@ import {
   computeSavings,
   decodeHtmlEntities,
 } from './normalizeClient';
+import {
+  searchColesProducts,
+  searchIgaProducts,
+  searchWoolworthsProducts,
+} from './competitorSearch';
 
 const SALEFINDER_BASE = 'https://www.salefinder.com.au';
 const ALDI_API_BASE = 'https://api.aldi.com.au/v3/product-search';
@@ -272,6 +277,7 @@ function parseSaleFinderListHtml(
       wasPrice: savings.wasPrice,
       saveAmount: savings.saveAmount,
       discountPercent: savings.discountPercent,
+      isOnSale: true,
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice,
@@ -404,7 +410,16 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
   const catNames = (item.categories || []).map((c) => c.name || '').join(' ');
   const category = classifyCategory(`${catNames} ${sourceLabel}`, fullTitle, 'aldi');
 
-  let promoText = sourceLabel;
+  const isSpecialCollection = /super\s*savers?|special\s*buys?/i.test(sourceLabel);
+  const isOnSale = Boolean(
+    savings.isHalfPrice ||
+      (savings.saveAmount && savings.saveAmount > 0) ||
+      item.price.savingsDisplay ||
+      item.onSaleDate ||
+      isSpecialCollection
+  );
+
+  let promoText: string | null = isOnSale ? sourceLabel : null;
   if (savings.isHalfPrice) {
     promoText = '1/2 Price';
   } else if (item.price.savingsDisplay) {
@@ -424,7 +439,7 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
     ? `On sale ${item.onSaleDate}${
         item.onSaleDateDisplay ? ` • ${item.onSaleDateDisplay}` : ''
       }`
-    : item.onSaleDateDisplay || 'This Week at ALDI';
+    : item.onSaleDateDisplay || 'Everyday Range';
 
   return {
     id: `aldi-${item.sku || slug}`,
@@ -438,6 +453,7 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
     wasPrice: savings.wasPrice,
     saveAmount: savings.saveAmount,
     discountPercent: savings.discountPercent,
+    isOnSale,
     isHalfPrice: savings.isHalfPrice,
     promoText,
     unitPrice:
@@ -595,76 +611,129 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
   return Array.from(seen.values());
 }
 
-function interleaveStores(
-  w: SpecialItem[],
-  c: SpecialItem[],
-  a: SpecialItem[]
-): SpecialItem[] {
-  const rank = (arr: SpecialItem[]) =>
-    [...arr].sort((x, y) => {
-      if (x.isHalfPrice !== y.isHalfPrice) return x.isHalfPrice ? -1 : 1;
-      const d = (y.discountPercent || 0) - (x.discountPercent || 0);
-      if (d !== 0) return d;
-      return (y.saveAmount || 0) - (x.saveAmount || 0);
-    });
+const EVERYDAY_STAPLES_QUERIES = [
+  'milk',
+  'bread',
+  'eggs',
+  'chicken breast',
+  'coffee',
+  'pasta',
+  'cheese',
+  'biscuits',
+];
 
-  const rw = rank(w);
-  const rc = rank(c);
-  const ra = rank(a);
-  const max = Math.max(rw.length, rc.length, ra.length);
+async function fetchEverydayBrowseRange(): Promise<{
+  woolworths: SpecialItem[];
+  coles: SpecialItem[];
+  iga: SpecialItem[];
+}> {
+  const wwMap = new Map<string, SpecialItem>();
+  const colesMap = new Map<string, SpecialItem>();
+  const igaMap = new Map<string, SpecialItem>();
+
+  await Promise.allSettled(
+    EVERYDAY_STAPLES_QUERIES.map(async (term) => {
+      const [ww, cl, ig] = await Promise.allSettled([
+        searchWoolworthsProducts(term, 6),
+        searchColesProducts(term, 6),
+        searchIgaProducts(term, 6),
+      ]);
+      if (ww.status === 'fulfilled') {
+        for (const item of ww.value) wwMap.set(item.id, item);
+      }
+      if (cl.status === 'fulfilled') {
+        for (const item of cl.value) colesMap.set(item.id, item);
+      }
+      if (ig.status === 'fulfilled') {
+        for (const item of ig.value) igaMap.set(item.id, item);
+      }
+    })
+  );
+
+  return {
+    woolworths: Array.from(wwMap.values()),
+    coles: Array.from(colesMap.values()),
+    iga: Array.from(igaMap.values()),
+  };
+}
+
+function dedupeStoreList(list: SpecialItem[]): SpecialItem[] {
+  const map = new Map<string, SpecialItem>();
+  for (const item of list) {
+    const key = `${item.store}-${item.title.toLowerCase().slice(0, 38)}`;
+    if (!map.has(key)) {
+      map.set(key, item);
+    }
+  }
+  return Array.from(map.values());
+}
+
+function interleaveStores(storeLists: SpecialItem[][]): SpecialItem[] {
+  const max = Math.max(...storeLists.map((l) => l.length), 0);
   const out: SpecialItem[] = [];
   for (let i = 0; i < max; i++) {
-    if (i < rw.length) out.push(rw[i]);
-    if (i < rc.length) out.push(rc[i]);
-    if (i < ra.length) out.push(ra[i]);
+    for (const list of storeLists) {
+      if (i < list.length) out.push(list[i]);
+    }
   }
   return out;
 }
 
 /**
- * Download specials directly on the iPhone from Woolworths, Coles & ALDI
- * without needing a companion PC server!
+ * Download everyday browse items + weekly sales directly on the iPhone
+ * from Woolworths, Coles, ALDI & IGA without needing a companion PC server!
  */
 export async function downloadAllSpecialsOnDevice(): Promise<SpecialsResponse> {
-  const [wwRes, colesRes, aldiRes] = await Promise.allSettled([
-    fetchStoreSaleFinderDirect('woolworths', 12),
-    fetchStoreSaleFinderDirect('coles', 12),
+  const [wwCatRes, colesCatRes, aldiRes, everydayRes] = await Promise.allSettled([
+    fetchStoreSaleFinderDirect('woolworths', 10),
+    fetchStoreSaleFinderDirect('coles', 10),
     fetchAldiDirect(),
+    fetchEverydayBrowseRange(),
   ]);
 
-  const wwItems = wwRes.status === 'fulfilled' ? wwRes.value.items : [];
-  const colesItems = colesRes.status === 'fulfilled' ? colesRes.value.items : [];
+  const wwSpecials = wwCatRes.status === 'fulfilled' ? wwCatRes.value.items : [];
+  const colesSpecials =
+    colesCatRes.status === 'fulfilled' ? colesCatRes.value.items : [];
   const aldiItems = aldiRes.status === 'fulfilled' ? aldiRes.value : [];
+  const everyday =
+    everydayRes.status === 'fulfilled'
+      ? everydayRes.value
+      : { woolworths: [], coles: [], iga: [] };
 
-  const items = interleaveStores(wwItems, colesItems, aldiItems);
+  // Blend everyday items & weekly specials so "All Items" browses full range and "On Sale" filters deals
+  const wwItems = dedupeStoreList([...everyday.woolworths, ...wwSpecials]);
+  const colesItems = dedupeStoreList([...everyday.coles, ...colesSpecials]);
+  const igaItems = dedupeStoreList(everyday.iga);
+
+  const items = interleaveStores([wwItems, colesItems, aldiItems, igaItems]);
   if (items.length === 0) {
-    throw new Error('Could not download specials. Please check your internet connection.');
+    throw new Error('Could not load products. Please check your internet connection.');
   }
 
-  const storeStats: Record<StoreId, { count: number; halfPriceCount: number; status: string }> = {
-    woolworths: {
-      count: wwItems.length,
-      halfPriceCount: wwItems.filter((i) => i.isHalfPrice).length,
-      status: wwRes.status === 'fulfilled' ? 'ok' : 'error',
-    },
-    coles: {
-      count: colesItems.length,
-      halfPriceCount: colesItems.filter((i) => i.isHalfPrice).length,
-      status: colesRes.status === 'fulfilled' ? 'ok' : 'error',
-    },
-    aldi: {
-      count: aldiItems.length,
-      halfPriceCount: aldiItems.filter((i) => i.isHalfPrice).length,
-      status: aldiRes.status === 'fulfilled' ? 'ok' : 'error',
-    },
+  const buildStat = (arr: SpecialItem[]) => ({
+    count: arr.length,
+    onSaleCount: arr.filter((i) => i.isOnSale).length,
+    halfPriceCount: arr.filter((i) => i.isHalfPrice).length,
+    status: 'ok',
+  });
+
+  const storeStats: SpecialsResponse['storeStats'] = {
+    woolworths: buildStat(wwItems),
+    coles: buildStat(colesItems),
+    aldi: buildStat(aldiItems),
+    iga: buildStat(igaItems),
   };
 
-  const catalogues: Record<StoreId, CatalogueInfo | null> = {
-    woolworths: wwRes.status === 'fulfilled' ? wwRes.value.catalogue : null,
-    coles: colesRes.status === 'fulfilled' ? colesRes.value.catalogue : null,
+  const catalogues: SpecialsResponse['catalogues'] = {
+    woolworths: wwCatRes.status === 'fulfilled' ? wwCatRes.value.catalogue : null,
+    coles: colesCatRes.status === 'fulfilled' ? colesCatRes.value.catalogue : null,
     aldi: {
-      name: 'ALDI Special Buys & Super Savers',
-      validDates: 'Updated Wed & Sat • While Stocks Last',
+      name: 'ALDI Everyday Range & Special Buys',
+      validDates: 'Updated Wed & Sat • Everyday Low Prices',
+    },
+    iga: {
+      name: 'IGA Everyday & Price Match',
+      validDates: 'Current Store Prices & Specials',
     },
   };
 

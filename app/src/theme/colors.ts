@@ -59,4 +59,20 @@ export const STORE_THEMES: Record<
     border: '#BDD1F0',
     textOnPrimary: '#FFFFFF',
   },
+  iga: {
+    name: 'IGA',
+    shortName: 'IGA',
+    primary: '#991B1B',
+    softBg: '#FEF2F2',
+    border: '#FECACA',
+    textOnPrimary: '#FFFFFF',
+  },
+  amazon: {
+    name: 'Amazon AU',
+    shortName: 'Amazon',
+    primary: '#232F3E',
+    softBg: '#FFF7ED',
+    border: '#FED7AA',
+    textOnPrimary: '#FFFFFF',
+  },
 };

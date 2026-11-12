@@ -22,18 +22,29 @@ const RETAILER_CONFIG = {
   },
 };
 
-async function fetchHtml(url) {
-  const res = await fetch(url, {
-    headers: {
-      'User-Agent': USER_AGENT,
-      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    },
-    signal: AbortSignal.timeout(14000),
-  });
-  if (!res.ok) {
-    throw new Error(`SaleFinder HTTP ${res.status} for ${url}`);
+async function fetchHtml(url, retries = 1) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(16000),
+      });
+      if (!res.ok) {
+        throw new Error(`SaleFinder HTTP ${res.status} for ${url}`);
+      }
+      return await res.text();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 600));
+      }
+    }
   }
-  return res.text();
+  throw lastErr;
 }
 
 /**
@@ -206,6 +217,7 @@ function parseSaleFinderListPage(html, { store, storeName, catalogue }) {
       wasPrice: savings.wasPrice,
       saveAmount: savings.saveAmount,
       discountPercent: savings.discountPercent,
+      isOnSale: true,
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice,

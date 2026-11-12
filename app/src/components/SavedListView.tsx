@@ -18,7 +18,7 @@ interface SavedListViewProps {
   onClearAll: () => void;
 }
 
-const STORE_ORDER: StoreId[] = ['woolworths', 'coles', 'aldi'];
+const STORE_ORDER: StoreId[] = ['woolworths', 'coles', 'aldi', 'iga', 'amazon'];
 
 export const SavedListView: React.FC<SavedListViewProps> = ({
   savedItems,
@@ -32,10 +32,10 @@ export const SavedListView: React.FC<SavedListViewProps> = ({
         <View style={styles.emptyIconCircle}>
           <Ionicons name="bookmark-outline" size={34} color={COLORS.accent} />
         </View>
-        <Text style={styles.emptyTitle}>No Saved Specials Yet</Text>
+        <Text style={styles.emptyTitle}>No Saved Items Yet</Text>
         <Text style={styles.emptySubtitle}>
-          Tap the bookmark icon on any Woolworths, Coles, or ALDI deal to build your
-          weekly shopping shortlist grouped by store.
+          Tap the bookmark icon on any item across Woolworths, Coles, ALDI, IGA, or
+          Amazon AU to build your shopping shortlist and compare prices.
         </Text>
       </View>
     );

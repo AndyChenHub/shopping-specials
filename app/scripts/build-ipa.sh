@@ -3,6 +3,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+IPA_OUT="${IPA_FILENAME:-AussieSpecials.ipa}"
+
 echo "==> Generating native iOS project via Expo Prebuild..."
 CI=1 npx expo prebuild --platform ios --clean --no-install
 
@@ -69,14 +71,16 @@ if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
   exit 1
 fi
 
-echo "==> Packaging $APP_PATH into AussieSpecials.ipa..."
-rm -rf build-ipa AussieSpecials.ipa
+echo "==> Packaging $APP_PATH into $IPA_OUT..."
+rm -rf build-ipa "$IPA_OUT"
 mkdir -p build-ipa/Payload
 cp -R "$APP_PATH" build-ipa/Payload/
 
 APP_BASENAME=$(basename "$APP_PATH")
 codesign --force --deep --sign - "build-ipa/Payload/$APP_BASENAME"
 
-(cd build-ipa && zip -qry "../AussieSpecials.ipa" Payload)
-ls -lh AussieSpecials.ipa
-echo "==> Successfully created app/AussieSpecials.ipa"
+(cd build-ipa && zip -qry "../$IPA_OUT" Payload)
+shasum -a 256 "$IPA_OUT" > "${IPA_OUT}.sha256"
+
+ls -lh "$IPA_OUT" "${IPA_OUT}.sha256"
+echo "==> Successfully created app/$IPA_OUT"

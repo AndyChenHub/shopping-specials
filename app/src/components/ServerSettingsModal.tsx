@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import {
+  ActivityIndicator,
+  Linking,
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,15 +19,25 @@ import {
   getLastActiveDataSource,
   setCustomApiBaseUrl,
 } from '../services/api';
+import {
+  APP_VERSION_INFO,
+  IpaReleaseCheckResult,
+} from '../services/versionChecker';
 
 interface ServerSettingsModalProps {
   visible: boolean;
+  releaseCheck: IpaReleaseCheckResult | null;
+  checkingRelease: boolean;
+  onCheckRelease: () => void;
   onClose: () => void;
   onSaved: () => void;
 }
 
 export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   visible,
+  releaseCheck,
+  checkingRelease,
+  onCheckRelease,
   onClose,
   onSaved,
 }) => {
@@ -51,6 +64,25 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
     onClose();
   };
 
+  const allReleasesUrl =
+    releaseCheck?.allReleasesUrl ||
+    `https://github.com/${APP_VERSION_INFO.repo}/releases`;
+
+  const handleDownloadIpa = () => {
+    const target = releaseCheck?.ipaDownloadUrl || releaseCheck?.releaseUrl || allReleasesUrl;
+    Linking.openURL(target);
+  };
+
+  const handleSideStoreInstall = () => {
+    if (!releaseCheck?.ipaDownloadUrl) return;
+    const encoded = encodeURIComponent(releaseCheck.ipaDownloadUrl);
+    Linking.openURL(`sidestore://install?url=${encoded}`).catch(() => {
+      Linking.openURL(`altstore://install?url=${encoded}`).catch(() => {
+        Linking.openURL(releaseCheck.ipaDownloadUrl!);
+      });
+    });
+  };
+
   return (
     <Modal
       visible={visible}
@@ -61,75 +93,191 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <View style={styles.header}>
-            <Text style={styles.title}>Data Source & Sync</Text>
+            <Text style={styles.title}>App Version & Settings</Text>
             <Pressable onPress={onClose} hitSlop={8}>
               <Ionicons name="close" size={22} color={COLORS.textSecondary} />
             </Pressable>
           </View>
 
-          <View
-            style={[
-              styles.statusBox,
-              activeMode === 'on-device'
-                ? styles.statusOnDevice
-                : styles.statusServer,
-            ]}
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={styles.scrollBody}
           >
-            <Ionicons
-              name={
-                activeMode === 'on-device'
-                  ? 'phone-portrait-outline'
-                  : 'server-outline'
-              }
-              size={18}
-              color={activeMode === 'on-device' ? '#137A36' : COLORS.accent}
-            />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.statusTitle}>
-                {activeMode === 'on-device'
-                  ? 'Standalone On-Device Sync Active'
-                  : 'Companion Server Connected'}
-              </Text>
-              <Text style={styles.statusSub}>
-                {activeMode === 'on-device'
-                  ? 'Downloads Woolworths, Coles & ALDI specials directly on your iPhone (works on 4G/5G & Wi-Fi with no PC needed).'
-                  : `Connected to ${customUrl || autoUrl}`}
-              </Text>
+            {/* Version & IPA Release Control */}
+            <View style={styles.versionCard}>
+              <View style={styles.versionHeaderRow}>
+                <View>
+                  <Text style={styles.sectionKicker}>INSTALLED IPA VERSION</Text>
+                  <Text style={styles.versionTitle}>
+                    v{APP_VERSION_INFO.version}{' '}
+                    <Text style={styles.buildSub}>
+                      (Build {APP_VERSION_INFO.buildNumber})
+                    </Text>
+                  </Text>
+                  <Text style={styles.commitMeta}>
+                    Commit: {APP_VERSION_INFO.gitSha}
+                  </Text>
+                </View>
+
+                <Pressable
+                  onPress={onCheckRelease}
+                  disabled={checkingRelease}
+                  style={styles.checkUpdateBtn}
+                >
+                  {checkingRelease ? (
+                    <ActivityIndicator size="small" color={COLORS.accent} />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="refresh-outline"
+                        size={15}
+                        color={COLORS.accent}
+                      />
+                      <Text style={styles.checkUpdateText}>Check Update</Text>
+                    </>
+                  )}
+                </Pressable>
+              </View>
+
+              {releaseCheck?.hasUpdate ? (
+                <View style={styles.updateAvailableBox}>
+                  <View style={styles.updateTitleRow}>
+                    <Ionicons name="sparkles" size={16} color={COLORS.accent} />
+                    <Text style={styles.updateTitleText}>
+                      New Release {releaseCheck.latestTag} Available!
+                    </Text>
+                  </View>
+                  <Text style={styles.updateSubText}>
+                    {releaseCheck.ipaFileName || 'Updated iOS .ipa'}
+                    {releaseCheck.ipaSizeMb ? ` • ${releaseCheck.ipaSizeMb} MB` : ''}
+                  </Text>
+
+                  <View style={styles.updateActionsRow}>
+                    <Pressable
+                      onPress={handleDownloadIpa}
+                      style={styles.downloadIpaBtn}
+                    >
+                      <Ionicons
+                        name="download-outline"
+                        size={16}
+                        color="#FFFFFF"
+                      />
+                      <Text style={styles.downloadIpaText}>Download .ipa</Text>
+                    </Pressable>
+
+                    {Platform.OS === 'ios' && releaseCheck.ipaDownloadUrl && (
+                      <Pressable
+                        onPress={handleSideStoreInstall}
+                        style={styles.sidestoreBtn}
+                      >
+                        <Text style={styles.sidestoreText}>
+                          SideStore / AltStore
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                </View>
+              ) : releaseCheck ? (
+                <View style={styles.upToDateRow}>
+                  <Ionicons
+                    name="checkmark-circle"
+                    size={16}
+                    color={COLORS.savingsText}
+                  />
+                  <Text style={styles.upToDateText}>
+                    {releaseCheck.noReleasesYet
+                      ? 'First GitHub Release is building or not published yet.'
+                      : `Up to date (latest release: ${releaseCheck.latestTag})`}
+                  </Text>
+                </View>
+              ) : null}
+
+              <Pressable
+                onPress={() => Linking.openURL(allReleasesUrl)}
+                style={styles.releasesLinkBtn}
+              >
+                <Ionicons
+                  name="git-branch-outline"
+                  size={15}
+                  color={COLORS.textSecondary}
+                />
+                <Text style={styles.releasesLinkText}>
+                  View All Versioned .ipa Releases on GitHub
+                </Text>
+                <Ionicons
+                  name="open-outline"
+                  size={14}
+                  color={COLORS.textMuted}
+                />
+              </Pressable>
             </View>
-          </View>
 
-          {Platform.OS !== 'web' && (
-            <Text style={styles.desc}>
-              Leave the field below blank to let your iPhone fetch specials
-              standalone anywhere, or enter a companion server URL (e.g.{' '}
-              <Text style={styles.code}>http://192.168.1.50:3001</Text>):
-            </Text>
-          )}
+            {/* Data Source Status */}
+            <View
+              style={[
+                styles.statusBox,
+                activeMode === 'on-device'
+                  ? styles.statusOnDevice
+                  : styles.statusServer,
+              ]}
+            >
+              <Ionicons
+                name={
+                  activeMode === 'on-device'
+                    ? 'phone-portrait-outline'
+                    : 'server-outline'
+                }
+                size={18}
+                color={activeMode === 'on-device' ? '#137A36' : COLORS.accent}
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.statusTitle}>
+                  {activeMode === 'on-device'
+                    ? 'Standalone On-Device Sync Active'
+                    : 'Companion Server Connected'}
+                </Text>
+                <Text style={styles.statusSub}>
+                  {activeMode === 'on-device'
+                    ? 'Downloads Woolworths, Coles & ALDI specials directly on your iPhone (works on 4G/5G & Wi-Fi with no PC needed).'
+                    : `Connected to ${customUrl || autoUrl}`}
+                </Text>
+              </View>
+            </View>
 
-          <Text style={styles.label}>Custom Companion Server URL (Optional)</Text>
-          <TextInput
-            value={customUrl}
-            onChangeText={setCustomUrl}
-            placeholder={
-              Platform.OS === 'web' ? autoUrl : 'Blank = Standalone On-Device Sync'
-            }
-            placeholderTextColor={COLORS.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            style={styles.input}
-          />
-
-          <View style={styles.actions}>
-            <Pressable onPress={handleReset} style={styles.resetBtn}>
-              <Text style={styles.resetText}>
-                {Platform.OS === 'web' ? 'Reset Default' : 'Use Standalone / Auto'}
+            {Platform.OS !== 'web' && (
+              <Text style={styles.desc}>
+                Leave blank for standalone on-device sync, or enter an optional
+                companion server URL:
               </Text>
-            </Pressable>
-            <Pressable onPress={handleSave} style={styles.saveBtn}>
-              <Text style={styles.saveText}>Save</Text>
-            </Pressable>
-          </View>
+            )}
+
+            <Text style={styles.label}>Custom Companion Server URL (Optional)</Text>
+            <TextInput
+              value={customUrl}
+              onChangeText={setCustomUrl}
+              placeholder={
+                Platform.OS === 'web'
+                  ? autoUrl
+                  : 'Blank = Standalone On-Device Sync'
+              }
+              placeholderTextColor={COLORS.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              style={styles.input}
+            />
+
+            <View style={styles.actions}>
+              <Pressable onPress={handleReset} style={styles.resetBtn}>
+                <Text style={styles.resetText}>
+                  {Platform.OS === 'web' ? 'Reset Default' : 'Use Standalone / Auto'}
+                </Text>
+              </Pressable>
+              <Pressable onPress={handleSave} style={styles.saveBtn}>
+                <Text style={styles.saveText}>Save</Text>
+              </Pressable>
+            </View>
+          </ScrollView>
         </View>
       </View>
     </Modal>
@@ -142,11 +290,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(15, 23, 42, 0.5)',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
+    padding: 18,
   },
   card: {
     width: '100%',
-    maxWidth: 420,
+    maxWidth: 440,
+    maxHeight: '90%',
     backgroundColor: COLORS.surface,
     borderRadius: 20,
     padding: 20,
@@ -161,6 +310,140 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '800',
     color: COLORS.textPrimary,
+  },
+  scrollBody: {
+    gap: 12,
+    paddingBottom: 4,
+  },
+  versionCard: {
+    backgroundColor: COLORS.background,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 10,
+  },
+  versionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  sectionKicker: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    color: COLORS.textMuted,
+    letterSpacing: 0.5,
+  },
+  versionTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: COLORS.textPrimary,
+    marginTop: 2,
+  },
+  buildSub: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
+  },
+  commitMeta: {
+    fontSize: 11.5,
+    color: COLORS.textMuted,
+    marginTop: 1,
+  },
+  checkUpdateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: COLORS.accentSoft,
+  },
+  checkUpdateText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  updateAvailableBox: {
+    backgroundColor: COLORS.accentSoft,
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#C5D9FC',
+    gap: 6,
+  },
+  updateTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  updateTitleText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: COLORS.accent,
+  },
+  updateSubText: {
+    fontSize: 12,
+    color: COLORS.textSecondary,
+  },
+  updateActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 4,
+  },
+  downloadIpaBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  downloadIpaText: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  sidestoreBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+  },
+  sidestoreText: {
+    color: COLORS.accent,
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  upToDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  upToDateText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: COLORS.savingsText,
+    flex: 1,
+  },
+  releasesLinkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  releasesLinkText: {
+    flex: 1,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: COLORS.textSecondary,
   },
   statusBox: {
     flexDirection: 'row',
@@ -190,19 +473,14 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   desc: {
-    fontSize: 13,
+    fontSize: 12.5,
     color: COLORS.textSecondary,
     lineHeight: 18,
-  },
-  code: {
-    fontWeight: '700',
-    color: COLORS.textPrimary,
   },
   label: {
     fontSize: 12.5,
     fontWeight: '700',
     color: COLORS.textSecondary,
-    marginTop: 2,
   },
   input: {
     height: 44,
@@ -218,7 +496,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'flex-end',
     gap: 10,
-    marginTop: 6,
+    marginTop: 4,
   },
   resetBtn: {
     paddingHorizontal: 14,

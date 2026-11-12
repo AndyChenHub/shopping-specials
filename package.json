@@ -12,6 +12,9 @@
     "app:web": "npm --prefix app run web",
     "build:ipa": "npm --prefix app run build:ipa:eas",
     "build:ipa:store": "npm --prefix app run build:ipa:store",
+    "version:patch": "node scripts/bump-version.mjs patch",
+    "version:minor": "node scripts/bump-version.mjs minor",
+    "version:major": "node scripts/bump-version.mjs major",
     "install:all": "npm --prefix server install && npm --prefix app install"
   }
 }

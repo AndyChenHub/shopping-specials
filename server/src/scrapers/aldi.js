@@ -65,7 +65,16 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     'aldi'
   );
 
-  let promoText = sourceLabel;
+  const isSpecialCollection = /super\s*savers?|special\s*buys?/i.test(sourceLabel);
+  const isOnSale = Boolean(
+    savings.isHalfPrice ||
+      (savings.saveAmount && savings.saveAmount > 0) ||
+      item.price.savingsDisplay ||
+      item.onSaleDate ||
+      isSpecialCollection
+  );
+
+  let promoText = isOnSale ? sourceLabel : null;
   if (savings.isHalfPrice) {
     promoText = '1/2 Price';
   } else if (item.price.savingsDisplay) {
@@ -78,7 +87,7 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     ? `On sale ${item.onSaleDate}${
         item.onSaleDateDisplay ? ` • ${item.onSaleDateDisplay}` : ''
       }`
-    : item.onSaleDateDisplay || 'This Week at ALDI';
+    : item.onSaleDateDisplay || 'Everyday Range';
 
   const productSlug = item.urlSlugText
     ? `${ALDI_WEB_BASE}/product/${item.urlSlugText}-${item.sku}`
@@ -96,6 +105,7 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     wasPrice: savings.wasPrice,
     saveAmount: savings.saveAmount,
     discountPercent: savings.discountPercent,
+    isOnSale,
     isHalfPrice: savings.isHalfPrice,
     promoText,
     unitPrice: cleanText(item.price.comparisonDisplay || item.price.perUnitDisplay || '') || null,

@@ -1,18 +1,18 @@
 import { syncAllSupermarkets } from './scrapers/index.js';
 
-console.log('Searching the web & downloading weekly specials from Woolworths, Coles, and ALDI...');
+console.log('Searching the web & downloading everyday items + weekly specials from Woolworths, Coles, ALDI & IGA...');
 const start = Date.now();
 const state = await syncAllSupermarkets({ maxPagesPerCatalogue: 15 });
 const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
-console.log(`\nDone in ${elapsed}s! Total specials downloaded: ${state.items.length}`);
+console.log(`\nDone in ${elapsed}s! Total items downloaded: ${state.items.length}`);
 console.log('Store breakdown:', JSON.stringify(state.storeStats, null, 2));
 console.log('Sample items:');
-for (const store of ['woolworths', 'coles', 'aldi']) {
+for (const store of ['woolworths', 'coles', 'aldi', 'iga']) {
   const sample = state.items.find((i) => i.store === store);
   if (sample) {
     console.log(
-      `  [${sample.storeName}] ${sample.title} -> ${sample.priceText} (${sample.promoText || 'Special'}) [${sample.category}]`
+      `  [${sample.storeName}] ${sample.title} -> ${sample.priceText} (${sample.isOnSale ? sample.promoText || 'On Sale' : 'Everyday Price'}) [${sample.category}]`
     );
   }
 }

@@ -7,6 +7,7 @@ node_modules/
 app/.expo/
 app/build-ipa/
 *.ipa
+*.sha256
 dist/
 web-build/
 expo-env.d.ts

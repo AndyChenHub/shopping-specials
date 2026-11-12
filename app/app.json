@@ -9,12 +9,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "au.com.shoppingspecials.app",
+      "buildNumber": "1",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
           "NSAllowsLocalNetworking": true
         }
-      }
+      },
+      "buildNumber": "1"
     },
     "android": {
       "package": "au.com.shoppingspecials.app",
