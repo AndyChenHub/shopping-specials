@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -12,6 +13,7 @@ import { COLORS } from '../theme/colors';
 import {
   getAutoDetectedBaseUrl,
   getCustomApiBaseUrlRaw,
+  getLastActiveDataSource,
   setCustomApiBaseUrl,
 } from '../services/api';
 
@@ -28,6 +30,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
 }) => {
   const [customUrl, setCustomUrl] = useState('');
   const autoUrl = getAutoDetectedBaseUrl();
+  const activeMode = getLastActiveDataSource();
 
   useEffect(() => {
     if (visible) {
@@ -58,27 +61,58 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
       <View style={styles.backdrop}>
         <View style={styles.card}>
           <View style={styles.header}>
-            <Text style={styles.title}>Companion Server</Text>
+            <Text style={styles.title}>Data Source & Sync</Text>
             <Pressable onPress={onClose} hitSlop={8}>
               <Ionicons name="close" size={22} color={COLORS.textSecondary} />
             </Pressable>
           </View>
 
-          <Text style={styles.desc}>
-            On local Wi-Fi, the app automatically connects to your PC running{' '}
-            <Text style={styles.code}>npm run server</Text>:
-          </Text>
-
-          <View style={styles.autoBox}>
-            <Ionicons name="wifi" size={16} color={COLORS.accent} />
-            <Text style={styles.autoUrlText}>{autoUrl}</Text>
+          <View
+            style={[
+              styles.statusBox,
+              activeMode === 'on-device'
+                ? styles.statusOnDevice
+                : styles.statusServer,
+            ]}
+          >
+            <Ionicons
+              name={
+                activeMode === 'on-device'
+                  ? 'phone-portrait-outline'
+                  : 'server-outline'
+              }
+              size={18}
+              color={activeMode === 'on-device' ? '#137A36' : COLORS.accent}
+            />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statusTitle}>
+                {activeMode === 'on-device'
+                  ? 'Standalone On-Device Sync Active'
+                  : 'Companion Server Connected'}
+              </Text>
+              <Text style={styles.statusSub}>
+                {activeMode === 'on-device'
+                  ? 'Downloads Woolworths, Coles & ALDI specials directly on your iPhone (works on 4G/5G & Wi-Fi with no PC needed).'
+                  : `Connected to ${customUrl || autoUrl}`}
+              </Text>
+            </View>
           </View>
 
-          <Text style={styles.label}>Custom Backend URL (Optional)</Text>
+          {Platform.OS !== 'web' && (
+            <Text style={styles.desc}>
+              Leave the field below blank to let your iPhone fetch specials
+              standalone anywhere, or enter a companion server URL (e.g.{' '}
+              <Text style={styles.code}>http://192.168.1.50:3001</Text>):
+            </Text>
+          )}
+
+          <Text style={styles.label}>Custom Companion Server URL (Optional)</Text>
           <TextInput
             value={customUrl}
             onChangeText={setCustomUrl}
-            placeholder={autoUrl}
+            placeholder={
+              Platform.OS === 'web' ? autoUrl : 'Blank = Standalone On-Device Sync'
+            }
             placeholderTextColor={COLORS.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -88,7 +122,9 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
 
           <View style={styles.actions}>
             <Pressable onPress={handleReset} style={styles.resetBtn}>
-              <Text style={styles.resetText}>Use Auto-Detect</Text>
+              <Text style={styles.resetText}>
+                {Platform.OS === 'web' ? 'Reset Default' : 'Use Standalone / Auto'}
+              </Text>
             </Pressable>
             <Pressable onPress={handleSave} style={styles.saveBtn}>
               <Text style={styles.saveText}>Save</Text>
@@ -126,33 +162,47 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: COLORS.textPrimary,
   },
-  desc: {
+  statusBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  statusOnDevice: {
+    backgroundColor: COLORS.savingsBg,
+    borderColor: '#B9E2C7',
+  },
+  statusServer: {
+    backgroundColor: COLORS.accentSoft,
+    borderColor: '#C5D9FC',
+  },
+  statusTitle: {
     fontSize: 13.5,
+    fontWeight: '800',
+    color: COLORS.textPrimary,
+  },
+  statusSub: {
+    fontSize: 12,
     color: COLORS.textSecondary,
-    lineHeight: 19,
+    lineHeight: 17,
+    marginTop: 2,
+  },
+  desc: {
+    fontSize: 13,
+    color: COLORS.textSecondary,
+    lineHeight: 18,
   },
   code: {
     fontWeight: '700',
     color: COLORS.textPrimary,
   },
-  autoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: COLORS.accentSoft,
-  },
-  autoUrlText: {
-    fontSize: 13.5,
-    fontWeight: '700',
-    color: COLORS.accent,
-  },
   label: {
     fontSize: 12.5,
     fontWeight: '700',
     color: COLORS.textSecondary,
-    marginTop: 4,
+    marginTop: 2,
   },
   input: {
     height: 44,
@@ -160,7 +210,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     paddingHorizontal: 12,
-    fontSize: 14.5,
+    fontSize: 14,
     color: COLORS.textPrimary,
     backgroundColor: COLORS.background,
   },

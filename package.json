@@ -10,6 +10,8 @@
     "app": "npm --prefix app start",
     "app:ios": "npm --prefix app run ios",
     "app:web": "npm --prefix app run web",
+    "build:ipa": "npm --prefix app run build:ipa:eas",
+    "build:ipa:store": "npm --prefix app run build:ipa:store",
     "install:all": "npm --prefix server install && npm --prefix app install"
   }
 }

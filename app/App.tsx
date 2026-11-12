@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
+  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -22,7 +23,11 @@ import {
   StoreId,
   StoreStat,
 } from './src/types/specials';
-import { fetchSpecials, triggerWebSync } from './src/services/api';
+import {
+  fetchSpecials,
+  loadCachedFeedFromDevice,
+  triggerWebSync,
+} from './src/services/api';
 import {
   loadSavedSpecials,
   persistSavedSpecials,
@@ -93,24 +98,38 @@ function MainApp() {
     loadSavedSpecials().then(setSavedItems);
   }, []);
 
-  const loadCataloguesFromServer = useCallback(async () => {
-    try {
-      setErrorMsg(null);
-      const data = await fetchSpecials();
+  const applySpecialsResponse = useCallback(
+    (data: Awaited<ReturnType<typeof fetchSpecials>>) => {
       setAllItems(data.items || []);
       setLiveExtraItems([]);
       if (data.categories?.length) setCategories(data.categories);
       setStoreStats(data.storeStats || null);
       setCatalogues(data.catalogues || null);
       setLastSyncedAt(data.lastSyncedAt || null);
+    },
+    []
+  );
+
+  const loadCataloguesFromServer = useCallback(async () => {
+    try {
+      setErrorMsg(null);
+      // Hydrate device cache immediately on cold boot so .ipa opens instantaneously
+      const cached = await loadCachedFeedFromDevice();
+      if (cached && cached.items?.length > 0) {
+        applySpecialsResponse(cached);
+        setInitialLoading(false);
+      }
+
+      const data = await fetchSpecials();
+      applySpecialsResponse(data);
     } catch (err: unknown) {
       const msg =
-        err instanceof Error ? err.message : 'Unable to reach companion server';
+        err instanceof Error ? err.message : 'Unable to fetch specials';
       setErrorMsg(msg);
     } finally {
       setInitialLoading(false);
     }
-  }, []);
+  }, [applySpecialsResponse]);
 
   useEffect(() => {
     loadCataloguesFromServer();
@@ -120,8 +139,8 @@ function MainApp() {
     try {
       setRefreshing(true);
       setErrorMsg(null);
-      await triggerWebSync();
-      await loadCataloguesFromServer();
+      const updated = await triggerWebSync();
+      applySpecialsResponse(updated);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : 'Failed to download specials from web';
@@ -129,7 +148,7 @@ function MainApp() {
     } finally {
       setRefreshing(false);
     }
-  }, [loadCataloguesFromServer]);
+  }, [applySpecialsResponse]);
 
   const handleLiveWebSearch = useCallback(async () => {
     const q = searchQuery.trim();
@@ -261,7 +280,9 @@ function MainApp() {
               <View style={styles.errorTextWrap}>
                 <Ionicons name="warning-outline" size={18} color={COLORS.danger} />
                 <Text style={styles.errorText} numberOfLines={2}>
-                  Cannot reach backend ({errorMsg}). Ensure `npm run server` is running.
+                  {Platform.OS === 'web'
+                    ? `Cannot reach backend (${errorMsg}). Ensure npm run server is running.`
+                    : `Could not sync specials (${errorMsg}). Check connection and retry.`}
                 </Text>
               </View>
               <Pressable onPress={loadCataloguesFromServer} style={styles.retryBtn}>

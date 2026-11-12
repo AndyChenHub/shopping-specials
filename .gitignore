@@ -2,9 +2,11 @@
 node_modules/
 */node_modules/
 
-# Expo
+# Expo & iOS builds
 .expo/
 app/.expo/
+app/build-ipa/
+*.ipa
 dist/
 web-build/
 expo-env.d.ts
