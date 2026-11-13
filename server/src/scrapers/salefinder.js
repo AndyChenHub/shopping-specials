@@ -247,15 +247,20 @@ function parseSaleFinderListPage(html, { store, storeName, catalogue }) {
 /**
  * Download weekly specials for Woolworths or Coles across multiple catalogue pages.
  */
-export async function fetchSaleFinderStoreSpecials(storeKey, { maxPages = 10 } = {}) {
+export async function fetchSaleFinderStoreSpecials(
+  storeKey,
+  { maxPages = 10, state = '' } = {}
+) {
   const config = RETAILER_CONFIG[storeKey];
   const catalogues = await discoverRetailerCatalogues(storeKey);
   if (catalogues.length === 0) {
     return { items: [], catalogue: null };
   }
 
-  // Primary weekly grocery catalogue
-  const primaryCatalogue = catalogues[0];
+  // Prefer catalogue matching user's state (e.g. NSW, VIC, QLD, WA, SA, TAS) when available
+  const stateRe = state ? new RegExp(`\\b${String(state).trim()}\\b`, 'i') : null;
+  const primaryCatalogue =
+    (stateRe && catalogues.find((c) => stateRe.test(c.name))) || catalogues[0];
   const seen = new Map();
 
   // Fetch page 1 first to discover total pages

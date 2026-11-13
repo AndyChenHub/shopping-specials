@@ -7,6 +7,8 @@ import {
   syncAllSupermarkets,
   searchSpecialsLive,
   compareItemAcrossCompetitors,
+  searchSuburbs,
+  findNearbyStores,
 } from './scrapers/index.js';
 
 const PORT = Number(process.env.PORT || 3001);
@@ -41,13 +43,66 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
+function extractLocationCtx(src = {}) {
+  return {
+    postcode: src.postcode ? String(src.postcode) : '',
+    suburb: src.suburb ? String(src.suburb) : '',
+    state: src.state ? String(src.state) : '',
+    wwStoreId: src.wwStoreId ? String(src.wwStoreId) : '',
+    wwStoreName: src.wwStoreName ? String(src.wwStoreName) : '',
+    igaStoreId: src.igaStoreId ? String(src.igaStoreId) : '',
+    igaStoreName: src.igaStoreName ? String(src.igaStoreName) : '',
+    aldiStoreId: src.aldiStoreId ? String(src.aldiStoreId) : '',
+    aldiStoreName: src.aldiStoreName ? String(src.aldiStoreName) : '',
+  };
+}
+
+app.get('/api/locations/suburbs', async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (!q) return res.json({ suburbs: [] });
+    const suburbs = await searchSuburbs(q);
+    res.json({ suburbs });
+  } catch (err) {
+    console.error('GET /api/locations/suburbs error:', err);
+    res.status(500).json({ error: err.message || 'Failed to look up suburbs' });
+  }
+});
+
+app.get('/api/locations/stores', async (req, res) => {
+  try {
+    const {
+      q = '',
+      postcode = '',
+      suburb = '',
+      state = '',
+      lat = '',
+      lon = '',
+    } = req.query;
+
+    const result = await findNearbyStores({
+      query: String(q || ''),
+      postcode: String(postcode || ''),
+      suburb: String(suburb || ''),
+      state: String(state || ''),
+      latitude: lat !== '' ? Number(lat) : null,
+      longitude: lon !== '' ? Number(lon) : null,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error('GET /api/locations/stores error:', err);
+    res.status(500).json({ error: err.message || 'Failed to find nearby stores' });
+  }
+});
+
 app.get('/api/specials', async (req, res) => {
   try {
+    const locationCtx = extractLocationCtx(req.query);
     let state = getStoreState();
 
     // If cache is empty on first request, trigger an initial download
     if (state.items.length === 0 && state.syncStatus !== 'syncing') {
-      state = await syncAllSupermarkets();
+      state = await syncAllSupermarkets({ locationCtx });
     }
 
     const {
@@ -56,6 +111,7 @@ app.get('/api/specials', async (req, res) => {
       dealFilter = 'all',
       onSale = 'false',
       halfPrice = 'false',
+      inStockOnly = 'false',
       q = '',
       live = 'false',
       sort = 'featured',
@@ -66,7 +122,7 @@ app.get('/api/specials', async (req, res) => {
     // Optional live web search when searching a keyword
     if (String(q).trim()) {
       if (live === 'true' || live === '1') {
-        pool = await searchSpecialsLive(String(q));
+        pool = await searchSpecialsLive(String(q), locationCtx);
       } else {
         const tokens = String(q)
           .trim()
@@ -105,6 +161,10 @@ app.get('/api/specials', async (req, res) => {
       pool = pool.filter((item) => isItemOnSale(item));
     }
 
+    if (inStockOnly === 'true' || inStockOnly === '1') {
+      pool = pool.filter((item) => item.inStock === true);
+    }
+
     // Category filter
     if (category && category !== 'All') {
       pool = pool.filter(
@@ -141,10 +201,11 @@ app.get('/api/specials', async (req, res) => {
 app.post('/api/compare', async (req, res) => {
   try {
     const rawItem = req.body?.item || req.body || {};
+    const locationCtx = extractLocationCtx(req.body?.location || req.query || {});
     if (!rawItem.title || !String(rawItem.title).trim()) {
       return res.status(400).json({ error: 'Missing item title for comparison' });
     }
-    const comparison = await compareItemAcrossCompetitors(rawItem);
+    const comparison = await compareItemAcrossCompetitors(rawItem, locationCtx);
     res.json(comparison);
   } catch (err) {
     console.error('POST /api/compare error:', err);
@@ -154,6 +215,7 @@ app.post('/api/compare', async (req, res) => {
 
 app.get('/api/compare', async (req, res) => {
   try {
+    const locationCtx = extractLocationCtx(req.query);
     const {
       title = '',
       brand = null,
@@ -175,22 +237,25 @@ app.get('/api/compare', async (req, res) => {
       return res.status(400).json({ error: 'Missing query parameter: title' });
     }
 
-    const comparison = await compareItemAcrossCompetitors({
-      title: String(title),
-      brand: brand ? String(brand) : null,
-      packageSize: packageSize ? String(packageSize) : null,
-      store: store ? String(store) : undefined,
-      price: price !== null && price !== '' ? Number(price) : null,
-      priceText: priceText ? String(priceText) : null,
-      wasPrice: wasPrice !== null && wasPrice !== '' ? Number(wasPrice) : null,
-      saveAmount: saveAmount !== null && saveAmount !== '' ? Number(saveAmount) : null,
-      isOnSale: isOnSale === 'true' || isOnSale === '1',
-      isHalfPrice: isHalfPrice === 'true' || isHalfPrice === '1',
-      promoText: promoText ? String(promoText) : null,
-      unitPrice: unitPrice ? String(unitPrice) : null,
-      imageUrl: imageUrl ? String(imageUrl) : null,
-      productUrl: productUrl ? String(productUrl) : null,
-    });
+    const comparison = await compareItemAcrossCompetitors(
+      {
+        title: String(title),
+        brand: brand ? String(brand) : null,
+        packageSize: packageSize ? String(packageSize) : null,
+        store: store ? String(store) : undefined,
+        price: price !== null && price !== '' ? Number(price) : null,
+        priceText: priceText ? String(priceText) : null,
+        wasPrice: wasPrice !== null && wasPrice !== '' ? Number(wasPrice) : null,
+        saveAmount: saveAmount !== null && saveAmount !== '' ? Number(saveAmount) : null,
+        isOnSale: isOnSale === 'true' || isOnSale === '1',
+        isHalfPrice: isHalfPrice === 'true' || isHalfPrice === '1',
+        promoText: promoText ? String(promoText) : null,
+        unitPrice: unitPrice ? String(unitPrice) : null,
+        imageUrl: imageUrl ? String(imageUrl) : null,
+        productUrl: productUrl ? String(productUrl) : null,
+      },
+      locationCtx
+    );
     res.json(comparison);
   } catch (err) {
     console.error('GET /api/compare error:', err);
@@ -198,9 +263,10 @@ app.get('/api/compare', async (req, res) => {
   }
 });
 
-app.post('/api/refresh', async (_req, res) => {
+app.post('/api/refresh', async (req, res) => {
   try {
-    const state = await syncAllSupermarkets();
+    const locationCtx = extractLocationCtx(req.body?.location || req.query || {});
+    const state = await syncAllSupermarkets({ locationCtx });
     res.json({
       ok: true,
       total: state.items.length,

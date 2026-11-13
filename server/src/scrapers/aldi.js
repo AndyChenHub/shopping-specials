@@ -19,7 +19,7 @@ function buildAldiImageUrl(item) {
     .replace('{slug}', `${slug}.jpg`);
 }
 
-function mapAldiProduct(item, sourceLabel = 'Special Buys') {
+function mapAldiProduct(item, sourceLabel = 'Special Buys', locationCtx = {}) {
   if (!item || !item.name || !item.price) return null;
 
   const rawPrice =
@@ -93,6 +93,20 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     ? `${ALDI_WEB_BASE}/product/${item.urlSlugText}-${item.sku}`
     : `${ALDI_WEB_BASE}/special-buys/`;
 
+  const inStock =
+    !item.discontinued &&
+    !/OUT_OF_STOCK|SOLD_OUT|UNAVAILABLE/i.test(
+      String(item.notForSaleReason || '')
+    );
+  const localStoreName = locationCtx?.aldiStoreName || null;
+  const stockLabel = inStock
+    ? localStoreName
+      ? `In Range • ${localStoreName}`
+      : 'In-Store Range'
+    : localStoreName
+    ? `Out of Stock • ${localStoreName}`
+    : 'Out of Stock';
+
   return {
     id: `aldi-${item.sku || item.urlSlugText}`,
     store: 'aldi',
@@ -100,6 +114,7 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     title: fullTitle,
     brand: brand || null,
     packageSize: cleanText(item.sellingSize || '') || null,
+    sku: item.sku ? String(item.sku) : null,
     price: savings.price,
     priceText: item.price.amountRelevantDisplay || `$${savings.price.toFixed(2)}`,
     wasPrice: savings.wasPrice,
@@ -114,6 +129,9 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys') {
     productUrl: productSlug,
     catalogueName: `ALDI ${sourceLabel}`,
     validDates,
+    inStock,
+    stockLabel,
+    localStoreName,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -146,8 +164,14 @@ async function queryAldiApi(params) {
  * Discover dynamic facet keys for ALDI promotional collections ("Super Savers", "New Low Price", "Limited Time Only", "Grocery Specials")
  * and download live specials.
  */
-export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
+export async function fetchAldiSpecials({
+  searchQuery = '',
+  locationCtx = {},
+} = {}) {
   const seen = new Map();
+  const spParam = locationCtx?.aldiStoreId
+    ? { servicePoint: locationCtx.aldiStoreId }
+    : {};
 
   // If user is performing a live web search for a specific term
   if (searchQuery.trim()) {
@@ -156,9 +180,10 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
       limit: 32,
       offset: 0,
       sort: 'relevance',
+      ...spParam,
     });
     for (const item of json.data || []) {
-      const mapped = mapAldiProduct(item, 'ALDI Range & Specials');
+      const mapped = mapAldiProduct(item, 'ALDI Range & Specials', locationCtx);
       if (mapped && !seen.has(mapped.id)) {
         seen.set(mapped.id, mapped);
       }
@@ -167,7 +192,12 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
   }
 
   // 1. Discover current facet IDs dynamically from a lightweight root search
-  const discovery = await queryAldiApi({ limit: 12, offset: 0, sort: 'relevance' });
+  const discovery = await queryAldiApi({
+    limit: 12,
+    offset: 0,
+    sort: 'relevance',
+    ...spParam,
+  });
   const facets = discovery?.meta?.facets || [];
   const catFacet = facets.find((f) => f.name === 'category-tree');
   const themeFacet = facets.find((f) => f.name === 'theme');
@@ -208,6 +238,7 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
           limit: col.limit,
           offset: 0,
           sort: 'relevance',
+          ...spParam,
         });
         data = res.data || [];
       } catch {
@@ -221,6 +252,7 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
             limit: col.limit,
             offset: 0,
             sort: 'relevance',
+            ...spParam,
           });
           data = res2.data || [];
         } catch {
@@ -229,7 +261,7 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
       }
 
       for (const raw of data) {
-        const mapped = mapAldiProduct(raw, col.label);
+        const mapped = mapAldiProduct(raw, col.label, locationCtx);
         if (mapped && !seen.has(mapped.id)) {
           seen.set(mapped.id, mapped);
         }
@@ -240,7 +272,7 @@ export async function fetchAldiSpecials({ searchQuery = '' } = {}) {
   // If still empty, use discovery items
   if (seen.size === 0) {
     for (const raw of discovery?.data || []) {
-      const mapped = mapAldiProduct(raw, 'Special Buys');
+      const mapped = mapAldiProduct(raw, 'Special Buys', locationCtx);
       if (mapped && !seen.has(mapped.id)) {
         seen.set(mapped.id, mapped);
       }

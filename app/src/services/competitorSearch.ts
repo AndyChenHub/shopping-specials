@@ -1,5 +1,6 @@
 import {
   CompetitorQuote,
+  LocationSearchContext,
   SpecialItem,
   StoreId,
 } from '../types/specials';
@@ -144,14 +145,17 @@ function buildConciseFallbackQuery(
 // ---------------------------------------------------------------------------
 export async function searchWoolworthsProducts(
   query: string,
-  limit = 10
+  limit = 16,
+  locationCtx: LocationSearchContext = {}
 ): Promise<SpecialItem[]> {
+  const pageSize = Math.min(Math.max(limit, 20), 36);
   const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(
     query
-  )}`;
+  )}&pageSize=${pageSize}`;
   const res = await fetchWithTimeout(url, 9500, { Accept: 'application/json' });
   const json = await res.json();
 
+  const localStoreName = locationCtx.wwStoreName || null;
   const out: SpecialItem[] = [];
   for (const bundle of json?.Products || []) {
     for (const p of bundle?.Products || []) {
@@ -187,6 +191,17 @@ export async function searchWoolworthsProducts(
       else if (saveAmount && saveAmount > 0) promoText = `Save $${saveAmount.toFixed(2)}`;
       else if (isOnSale) promoText = 'On Special';
 
+      const inStock = Boolean(
+        p.IsInStock ?? p.InstoreIsAvailable ?? p.IsAvailable ?? true
+      );
+      const stockLabel = inStock
+        ? localStoreName
+          ? `In Stock • ${localStoreName}`
+          : 'In Stock'
+        : localStoreName
+        ? `Out of Stock • ${localStoreName}`
+        : 'Out of Stock';
+
       const slug = p.UrlFriendlyName || '';
       const productUrl = p.Stockcode
         ? `https://www.woolworths.com.au/shop/productdetails/${p.Stockcode}/${slug}`
@@ -202,6 +217,7 @@ export async function searchWoolworthsProducts(
         brand: p.Brand ? decodeHtmlEntities(p.Brand) : null,
         packageSize: p.PackageSize ? decodeHtmlEntities(p.PackageSize) : extractPackageSize(title),
         barcode: p.Barcode ? String(p.Barcode) : null,
+        sku: p.Stockcode ? String(p.Stockcode) : null,
         price: p.Price,
         priceText: `$${p.Price.toFixed(2)}`,
         wasPrice,
@@ -216,6 +232,9 @@ export async function searchWoolworthsProducts(
         productUrl,
         catalogueName: isOnSale ? 'Woolworths Specials' : 'Woolworths Everyday Range',
         validDates: isOnSale ? 'Current Store Price' : 'Everyday Regular Price',
+        inStock,
+        stockLabel,
+        localStoreName,
         fetchedAt: new Date().toISOString(),
       });
 
@@ -230,7 +249,8 @@ export async function searchWoolworthsProducts(
 // ---------------------------------------------------------------------------
 export async function searchColesProducts(
   query: string,
-  limit = 10
+  limit = 10,
+  locationCtx: LocationSearchContext = {}
 ): Promise<SpecialItem[]> {
   const searchUrl = `https://www.coles.com.au/search/products?q=${encodeURIComponent(
     query
@@ -312,6 +332,23 @@ export async function searchColesProducts(
 
     const catHint = r.merchandiseHeir?.category || r.merchandiseHeir?.subCategory || '';
 
+    const inStock =
+      typeof r.availability === 'boolean'
+        ? r.availability
+        : r.availabilityType
+        ? !/OUT|UNAVAIL/i.test(String(r.availabilityType))
+        : true;
+    const regionTag = locationCtx.suburb
+      ? `Coles ${locationCtx.suburb}`
+      : locationCtx.state
+      ? `Coles ${locationCtx.state}`
+      : null;
+    const stockLabel = inStock
+      ? regionTag
+        ? `In Stock • ${regionTag}`
+        : 'In Stock'
+      : 'Out of Stock';
+
     out.push({
       id: `coles-sku-${r.id || slug}`,
       store: 'coles',
@@ -319,6 +356,7 @@ export async function searchColesProducts(
       title: fullTitle,
       brand: brand || null,
       packageSize: size || extractPackageSize(fullTitle),
+      sku: r.id ? String(r.id) : null,
       price,
       priceText: `$${price.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -333,6 +371,9 @@ export async function searchColesProducts(
       productUrl,
       catalogueName: isOnSale ? 'Coles Specials' : 'Coles Everyday Range',
       validDates: isOnSale ? 'Current Store Price' : 'Everyday Regular Price',
+      inStock,
+      stockLabel,
+      localStoreName: regionTag,
       fetchedAt: new Date().toISOString(),
     });
 
@@ -347,7 +388,8 @@ export async function searchColesProducts(
 // ---------------------------------------------------------------------------
 export async function searchAldiProducts(
   query: string,
-  limit = 12
+  limit = 12,
+  locationCtx: LocationSearchContext = {}
 ): Promise<SpecialItem[]> {
   // ALDI API allows limit in [12,16,24,30,32,48,60]
   const validLimit = limit <= 12 ? 12 : limit <= 16 ? 16 : 24;
@@ -359,6 +401,9 @@ export async function searchAldiProducts(
     offset: '0',
     sort: 'relevance',
   });
+  if (locationCtx.aldiStoreId) {
+    qs.set('servicePoint', locationCtx.aldiStoreId);
+  }
 
   const res = await fetchWithTimeout(
     `https://api.aldi.com.au/v3/product-search?${qs.toString()}`,
@@ -421,6 +466,22 @@ export async function searchAldiProducts(
       .map((c: { name?: string }) => c.name || '')
       .join(' ');
 
+    const aldiStoreName = locationCtx.aldiStoreName || null;
+    const inStock =
+      !item.discontinued &&
+      !/OUT_OF_STOCK/i.test(String(item.notForSaleReason || ''));
+    const stockLabel = !inStock
+      ? aldiStoreName
+        ? `Sold Out • ${aldiStoreName}`
+        : 'Out of Stock'
+      : isSpecialBuy
+      ? aldiStoreName
+        ? `Special Buy • ${aldiStoreName}`
+        : 'Limited Special Buy'
+      : aldiStoreName
+      ? `In Range • ${aldiStoreName}`
+      : 'In-Store Range';
+
     out.push({
       id: `aldi-${item.sku || slug}`,
       store: 'aldi',
@@ -428,6 +489,7 @@ export async function searchAldiProducts(
       title: fullTitle,
       brand: brand || null,
       packageSize: decodeHtmlEntities(item.sellingSize || '') || extractPackageSize(fullTitle),
+      sku: item.sku ? String(item.sku) : null,
       price: rawPrice,
       priceText: item.price.amountRelevantDisplay || `$${rawPrice.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -447,6 +509,9 @@ export async function searchAldiProducts(
         : `https://www.aldi.com.au/results?q=${encodeURIComponent(query)}`,
       catalogueName: isOnSale ? 'ALDI Special Buys' : 'ALDI Everyday Low Price',
       validDates: item.onSaleDateDisplay || 'Everyday Range',
+      inStock,
+      stockLabel,
+      localStoreName: aldiStoreName,
       fetchedAt: new Date().toISOString(),
     });
 
@@ -460,11 +525,14 @@ export async function searchAldiProducts(
 // ---------------------------------------------------------------------------
 export async function searchIgaProducts(
   query: string,
-  limit = 10
+  limit = 10,
+  locationCtx: LocationSearchContext = {}
 ): Promise<SpecialItem[]> {
-  const url = `https://www.igashop.com.au/api/storefront/stores/${IGA_DEFAULT_STORE_ID}/search?q=${encodeURIComponent(
-    query
-  )}&take=${limit}`;
+  const activeStoreId = locationCtx.igaStoreId || IGA_DEFAULT_STORE_ID;
+  const localStoreName = locationCtx.igaStoreName || null;
+  const url = `https://www.igashop.com.au/api/storefront/stores/${encodeURIComponent(
+    activeStoreId
+  )}/search?q=${encodeURIComponent(query)}&take=${limit}`;
 
   const res = await fetchWithTimeout(url, 9500, { Accept: 'application/json' });
   const json = await res.json();
@@ -523,13 +591,23 @@ export async function searchIgaProducts(
     const catHint =
       item.defaultCategory?.[0]?.categoryBreadcrumb || '';
 
+    const inStock = item.available !== false;
+    const stockLabel = inStock
+      ? localStoreName
+        ? `In Stock • ${localStoreName}`
+        : 'In Stock'
+      : localStoreName
+      ? `Out of Stock • ${localStoreName}`
+      : 'Out of Stock';
+
     out.push({
-      id: `iga-${item.productId || item.sku || fullTitle}`,
+      id: `iga-${activeStoreId}-${item.productId || item.sku || fullTitle}`,
       store: 'iga',
       storeName: 'IGA',
       title: fullTitle,
       brand: brand || null,
       packageSize: sizeStr || extractPackageSize(fullTitle),
+      sku: item.sku ? String(item.sku) : null,
       price,
       priceText: `$${price.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -542,8 +620,12 @@ export async function searchIgaProducts(
       category: classifyCategory(catHint, fullTitle, 'iga'),
       imageUrl: item.image?.default || item.image?.cell || null,
       productUrl: `https://www.igashop.com.au/search?q=${encodeURIComponent(fullTitle)}`,
-      catalogueName: isOnSale ? 'IGA Price Match & Specials' : 'IGA Everyday Range',
+      catalogueName:
+        localStoreName || (isOnSale ? 'IGA Price Match & Specials' : 'IGA Everyday Range'),
       validDates: isOnSale ? 'Current Store Offer' : 'Everyday Regular Price',
+      inStock,
+      stockLabel,
+      localStoreName,
       fetchedAt: new Date().toISOString(),
     });
   }
@@ -562,13 +644,15 @@ export async function searchAmazonAuProducts(
   const html = await res.text();
 
   const out: SpecialItem[] = [];
-  const regex =
-    /<div[^>]*data-asin="([A-Z0-9]{10})"[^>]*data-component-type="s-search-result"[^>]*>([\s\S]*?)(?=<div[^>]*data-component-type="s-search-result"|<div[^>]*class="s-main-slot|$)/gi;
+  const parts = html.split(
+    /(?=<div[^>]*data-component-type="s-search-result"[^>]*>)/i
+  );
 
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(html)) !== null) {
-    const asin = m[1];
-    const block = m[2];
+  for (let i = 1; i < parts.length; i++) {
+    const block = parts[i];
+    const asinMatch = block.slice(0, 360).match(/data-asin="([A-Z0-9]{10})"/i);
+    if (!asinMatch) continue;
+    const asin = asinMatch[1];
 
     // Skip paid irrelevant sponsored ad placements
     if (/s-sponsored-label|AdHolder/i.test(block.slice(0, 900))) continue;
@@ -625,6 +709,9 @@ export async function searchAmazonAuProducts(
       productUrl: `https://www.amazon.com.au/dp/${asin}`,
       catalogueName: 'Amazon.com.au',
       validDates: 'Live Amazon Price',
+      inStock: true,
+      stockLabel: 'In Stock Online',
+      localStoreName: 'Amazon AU Delivery',
       fetchedAt: new Date().toISOString(),
     });
 
@@ -749,7 +836,11 @@ function fallbackSearchUrl(store: StoreId, query: string): string {
 const COMPETITOR_LIST: Array<{
   store: StoreId;
   storeName: CompetitorQuote['storeName'];
-  fetcher: (q: string, limit: number) => Promise<SpecialItem[]>;
+  fetcher: (
+    q: string,
+    limit: number,
+    ctx?: LocationSearchContext
+  ) => Promise<SpecialItem[]>;
 }> = [
   { store: 'woolworths', storeName: 'Woolworths', fetcher: searchWoolworthsProducts },
   { store: 'coles', storeName: 'Coles', fetcher: searchColesProducts },
@@ -762,14 +853,29 @@ const COMPETITOR_LIST: Array<{
  * Compare a clicked item across Woolworths, Coles, ALDI, IGA, and Amazon AU!
  */
 export async function compareItemAcrossCompetitorsOnDevice(
-  item: SpecialItem
+  item: SpecialItem,
+  locationCtx: LocationSearchContext = {}
 ): Promise<{ queryUsed: string; quotes: CompetitorQuote[] }> {
   const queryUsed = buildCleanSearchQuery(item);
 
   const settled = await Promise.allSettled(
     COMPETITOR_LIST.map(async (comp) => {
-      // If this competitor IS the item's own store, keep the exact clicked item as baseline!
-      if (comp.store === item.store) {
+      const isOwnStore = comp.store === item.store;
+      const needsLiveLocalStock =
+        isOwnStore &&
+        (item.inStock === undefined ||
+          item.inStock === null ||
+          (comp.store === 'iga' &&
+            locationCtx.igaStoreName &&
+            item.localStoreName !== locationCtx.igaStoreName) ||
+          (comp.store === 'woolworths' &&
+            locationCtx.wwStoreName &&
+            item.localStoreName !== locationCtx.wwStoreName) ||
+          (comp.store === 'aldi' &&
+            locationCtx.aldiStoreName &&
+            item.localStoreName !== locationCtx.aldiStoreName));
+
+      if (isOwnStore && !needsLiveLocalStock) {
         return {
           store: comp.store,
           storeName: comp.storeName,
@@ -786,18 +892,61 @@ export async function compareItemAcrossCompetitorsOnDevice(
           unitPrice: item.unitPrice,
           imageUrl: item.imageUrl,
           productUrl: item.productUrl || fallbackSearchUrl(comp.store, queryUsed),
+          inStock: item.inStock ?? true,
+          stockLabel: item.stockLabel || 'In Stock',
+          localStoreName: item.localStoreName || null,
           isCurrentItem: true,
         } satisfies CompetitorQuote;
       }
 
-      let candidates = await comp.fetcher(queryUsed, 8);
+      let candidates: SpecialItem[] = [];
+      try {
+        candidates = await comp.fetcher(queryUsed, 8, locationCtx);
+      } catch {
+        candidates = [];
+      }
       let best = pickBestCandidate(item, candidates);
       if (!best) {
         const shortQ = buildConciseFallbackQuery(queryUsed, item.packageSize);
         if (shortQ) {
-          candidates = await comp.fetcher(shortQ, 8);
-          best = pickBestCandidate(item, candidates);
+          try {
+            candidates = await comp.fetcher(shortQ, 8, locationCtx);
+            best = pickBestCandidate(item, candidates);
+          } catch {
+            // ignore fallback error
+          }
         }
+      }
+
+      if (isOwnStore) {
+        return {
+          store: comp.store,
+          storeName: comp.storeName,
+          matched: true,
+          title: item.title,
+          packageSize: item.packageSize || best?.packageSize || null,
+          price: comp.store === 'iga' && best?.price ? best.price : item.price,
+          priceText:
+            comp.store === 'iga' && best?.priceText
+              ? best.priceText
+              : item.priceText || `$${item.price.toFixed(2)}`,
+          wasPrice: item.wasPrice ?? best?.wasPrice ?? null,
+          saveAmount: item.saveAmount ?? best?.saveAmount ?? null,
+          isOnSale: item.isOnSale || Boolean(best?.isOnSale),
+          isHalfPrice: item.isHalfPrice || Boolean(best?.isHalfPrice),
+          promoText: item.promoText || best?.promoText || null,
+          unitPrice: item.unitPrice || best?.unitPrice || null,
+          imageUrl: item.imageUrl || best?.imageUrl || null,
+          productUrl:
+            best?.productUrl ||
+            item.productUrl ||
+            fallbackSearchUrl(comp.store, queryUsed),
+          inStock: best ? best.inStock ?? true : item.inStock ?? null,
+          stockLabel:
+            best?.stockLabel || item.stockLabel || 'Check Local Store Stock',
+          localStoreName: best?.localStoreName || item.localStoreName || null,
+          isCurrentItem: true,
+        } satisfies CompetitorQuote;
       }
 
       if (best) {
@@ -817,6 +966,9 @@ export async function compareItemAcrossCompetitorsOnDevice(
           unitPrice: best.unitPrice,
           imageUrl: best.imageUrl,
           productUrl: best.productUrl || fallbackSearchUrl(comp.store, queryUsed),
+          inStock: best.inStock ?? true,
+          stockLabel: best.stockLabel || 'In Stock',
+          localStoreName: best.localStoreName || null,
         } satisfies CompetitorQuote;
       }
 
@@ -836,6 +988,9 @@ export async function compareItemAcrossCompetitorsOnDevice(
         unitPrice: null,
         imageUrl: null,
         productUrl: fallbackSearchUrl(comp.store, queryUsed),
+        inStock: null,
+        stockLabel: 'Check Store Website',
+        localStoreName: null,
       } satisfies CompetitorQuote;
     })
   );
@@ -876,17 +1031,18 @@ export async function compareItemAcrossCompetitorsOnDevice(
  * Live cross-store product search (both everyday items & sales) across Woolworths, Coles, ALDI, IGA & Amazon AU!
  */
 export async function searchAllCompetitorsLive(
-  query: string
+  query: string,
+  locationCtx: LocationSearchContext = {}
 ): Promise<SpecialItem[]> {
   const q = query.trim();
   if (!q) return [];
 
   const settled = await Promise.allSettled([
-    searchWoolworthsProducts(q, 10),
-    searchColesProducts(q, 10),
-    searchAldiProducts(q, 12),
-    searchIgaProducts(q, 8),
-    searchAmazonAuProducts(q, 6),
+    searchWoolworthsProducts(q, 20, locationCtx),
+    searchColesProducts(q, 20, locationCtx),
+    searchAldiProducts(q, 24, locationCtx),
+    searchIgaProducts(q, 16, locationCtx),
+    searchAmazonAuProducts(q, 10),
   ]);
 
   const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));

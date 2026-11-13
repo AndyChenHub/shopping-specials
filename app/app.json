@@ -11,6 +11,7 @@
       "bundleIdentifier": "au.com.shoppingspecials.app",
       "buildNumber": "3",
       "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Aussie Specials uses your location to find nearby Woolworths, Coles, ALDI and IGA stores and check local stock availability.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
           "NSAllowsLocalNetworking": true

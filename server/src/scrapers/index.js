@@ -8,6 +8,7 @@ import {
   searchAmazonAuProducts,
   compareItemAcrossCompetitors,
 } from './competitors.js';
+import { searchSuburbs, findNearbyStores } from './locations.js';
 import { saveCacheToDisk, getStoreState, setSyncStatus } from '../cache.js';
 
 let activeSyncPromise = null;
@@ -16,36 +17,53 @@ const EVERYDAY_STAPLES = [
   'milk',
   'bread',
   'eggs',
-  'chicken breast',
-  'coffee',
-  'pasta',
-  'cheese',
+  'chips',
+  'chocolate',
+  'soft drink',
   'biscuits',
+  'coffee',
+  'cereal',
+  'pasta',
+  'rice',
+  'cheese',
+  'yogurt',
+  'chicken breast',
+  'apples',
+  'ice cream',
 ];
 
-async function fetchEverydayRange() {
+const COLES_GENTLE_STAPLES = new Set(['milk', 'chips', 'coffee', 'cheese']);
+
+async function fetchEverydayRange(locationCtx = {}) {
   const wwMap = new Map();
   const colesMap = new Map();
   const igaMap = new Map();
 
-  await Promise.allSettled(
-    EVERYDAY_STAPLES.map(async (term) => {
-      const [ww, cl, ig] = await Promise.allSettled([
-        searchWoolworthsProducts(term, 6),
-        searchColesProducts(term, 6),
-        searchIgaProducts(term, 6),
-      ]);
-      if (ww.status === 'fulfilled') {
-        for (const item of ww.value) wwMap.set(item.id, item);
-      }
-      if (cl.status === 'fulfilled') {
-        for (const item of cl.value) colesMap.set(item.id, item);
-      }
-      if (ig.status === 'fulfilled') {
-        for (const item of ig.value) igaMap.set(item.id, item);
-      }
-    })
-  );
+  // Fetch in gentle batches of 4 terms (with at most 1 Coles SSR query per batch)
+  const batchSize = 4;
+  for (let i = 0; i < EVERYDAY_STAPLES.length; i += batchSize) {
+    const batch = EVERYDAY_STAPLES.slice(i, i + batchSize);
+    await Promise.allSettled(
+      batch.map(async (term) => {
+        const [ww, cl, ig] = await Promise.allSettled([
+          searchWoolworthsProducts(term, 10, locationCtx),
+          COLES_GENTLE_STAPLES.has(term)
+            ? searchColesProducts(term, 12, locationCtx)
+            : Promise.resolve([]),
+          searchIgaProducts(term, 8, locationCtx),
+        ]);
+        if (ww.status === 'fulfilled') {
+          for (const item of ww.value) wwMap.set(item.id, item);
+        }
+        if (cl.status === 'fulfilled') {
+          for (const item of cl.value) colesMap.set(item.id, item);
+        }
+        if (ig.status === 'fulfilled') {
+          for (const item of ig.value) igaMap.set(item.id, item);
+        }
+      })
+    );
+  }
 
   return {
     woolworths: Array.from(wwMap.values()),
@@ -77,7 +95,10 @@ function interleaveLists(lists) {
 /**
  * Search the web & download everyday items + weekly specials from Woolworths, Coles, ALDI & IGA.
  */
-export async function syncAllSupermarkets({ maxPagesPerCatalogue = 12 } = {}) {
+export async function syncAllSupermarkets({
+  maxPagesPerCatalogue = 12,
+  locationCtx = {},
+} = {}) {
   if (activeSyncPromise) {
     return activeSyncPromise;
   }
@@ -87,10 +108,16 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 12 } = {}) {
     const prevState = getStoreState();
 
     const [wwRes, colesRes, aldiRes, everydayRes] = await Promise.allSettled([
-      fetchSaleFinderStoreSpecials('woolworths', { maxPages: maxPagesPerCatalogue }),
-      fetchSaleFinderStoreSpecials('coles', { maxPages: maxPagesPerCatalogue }),
-      fetchAldiSpecials(),
-      fetchEverydayRange(),
+      fetchSaleFinderStoreSpecials('woolworths', {
+        maxPages: maxPagesPerCatalogue,
+        state: locationCtx?.state || '',
+      }),
+      fetchSaleFinderStoreSpecials('coles', {
+        maxPages: maxPagesPerCatalogue,
+        state: locationCtx?.state || '',
+      }),
+      fetchAldiSpecials({ locationCtx }),
+      fetchEverydayRange(locationCtx),
     ]);
 
     const prevByStore = (store) =>
@@ -194,17 +221,17 @@ export async function syncAllSupermarkets({ maxPagesPerCatalogue = 12 } = {}) {
 /**
  * Live search across cached items + live Woolworths, Coles, ALDI, IGA & Amazon AU feeds!
  */
-export async function searchSpecialsLive(query) {
+export async function searchSpecialsLive(query, locationCtx = {}) {
   const q = String(query || '').trim();
   const state = getStoreState();
   if (!q) return state.items;
 
   const settled = await Promise.allSettled([
-    searchWoolworthsProducts(q, 10),
-    searchColesProducts(q, 10),
-    searchAldiProducts(q, 12),
-    searchIgaProducts(q, 8),
-    searchAmazonAuProducts(q, 6),
+    searchWoolworthsProducts(q, 20, locationCtx),
+    searchColesProducts(q, 20, locationCtx),
+    searchAldiProducts(q, 24, locationCtx),
+    searchIgaProducts(q, 16, locationCtx),
+    searchAmazonAuProducts(q, 10),
   ]);
 
   const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
@@ -229,4 +256,4 @@ export async function searchSpecialsLive(query) {
   return out;
 }
 
-export { compareItemAcrossCompetitors };
+export { compareItemAcrossCompetitors, searchSuburbs, findNearbyStores };

@@ -14,6 +14,7 @@ export interface SpecialItem {
   brand: string | null;
   packageSize: string | null;
   barcode?: string | null;
+  sku?: string | null;
   price: number;
   priceText: string;
   wasPrice: number | null;
@@ -28,6 +29,9 @@ export interface SpecialItem {
   productUrl: string | null;
   catalogueName: string | null;
   validDates: string | null;
+  inStock?: boolean | null;
+  stockLabel?: string | null;
+  localStoreName?: string | null;
   fetchedAt: string;
 }
 
@@ -47,7 +51,64 @@ export interface CompetitorQuote {
   unitPrice: string | null;
   imageUrl: string | null;
   productUrl: string;
+  inStock?: boolean | null;
+  stockLabel?: string | null;
+  localStoreName?: string | null;
   isCurrentItem?: boolean;
+}
+
+export interface SuburbSuggestion {
+  postcode: string;
+  suburb: string;
+  state: string;
+  latitude: number;
+  longitude: number;
+  display: string;
+}
+
+export interface NearbyStoreOption {
+  store: 'woolworths' | 'iga' | 'aldi';
+  storeId: string;
+  name: string;
+  address: string;
+  suburb: string;
+  state: string;
+  postcode: string;
+  distanceKm: number | null;
+  isOpen?: boolean | null;
+  tradingHours?: string | null;
+}
+
+export interface NearbyStoresResponse {
+  location: SuburbSuggestion;
+  stores: {
+    woolworths: NearbyStoreOption[];
+    iga: NearbyStoreOption[];
+    aldi: NearbyStoreOption[];
+  };
+}
+
+export interface UserStoreLocation {
+  postcode: string;
+  suburb: string;
+  state: string;
+  latitude: number;
+  longitude: number;
+  woolworthsStore: NearbyStoreOption | null;
+  igaStore: NearbyStoreOption | null;
+  aldiStore: NearbyStoreOption | null;
+}
+
+export interface LocationSearchContext {
+  postcode?: string;
+  suburb?: string;
+  state?: string;
+  wwStoreId?: string;
+  wwStoreName?: string;
+  igaStoreId?: string;
+  igaStoreName?: string;
+  aldiStoreId?: string;
+  aldiStoreName?: string;
 }
 
 export interface StoreStat {

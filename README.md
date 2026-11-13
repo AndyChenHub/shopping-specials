@@ -4,9 +4,10 @@ Browse everyday supermarket items, filter by **On Sale** or **½ Price** deals, 
 
 ## Key Features
 
-- **Browse All Items or Filter by Sales**: Switch instantly between **All Items** (everyday groceries + specials), **On Sale**, and **½ Price** deals across **Woolworths**, **Coles**, **ALDI**, **IGA**, and **Amazon AU**.
-- **One-Tap 5-Store Price Comparison**: Tapping any browsed item opens its detail sheet and fetches live side-by-side prices across **Amazon AU (`amazon.com.au`)**, **Woolworths**, **Coles**, **ALDI**, and **IGA**, highlighting the **Best Price**, unit prices, active promotions, and direct links to each store.
-- **Live Cross-Retailer Search**: Search any item (e.g. *Nutella*, *Tim Tam*, *milk*, *Panadol*) locally or tap **Live Search** to query all 5 retailers simultaneously.
+- **Browse All Items or Filter by Sales & Stock**: Switch instantly between **All Items** (everyday groceries + specials), **On Sale**, **½ Price**, and **In Stock** items across **Woolworths**, **Coles**, **ALDI**, **IGA**, and **Amazon AU**.
+- **Postcode / Suburb & Local Store Stock Checking**: Enter any Australian postcode or suburb (or tap **Use Current GPS Location**) to pick your preferred nearby **IGA**, **Woolworths**, and **ALDI** stores, set your state region for **Coles** & weekly catalogues, and see live **In Stock / Out of Stock** badges on cards and competitor comparisons.
+- **One-Tap 5-Store Price & Stock Comparison**: Tapping any browsed item opens its detail sheet and fetches live side-by-side prices and stock status across **Amazon AU (`amazon.com.au`)**, **Woolworths**, **Coles**, **ALDI**, and **IGA**, highlighting the **Best Price**, unit prices, active promotions, and direct links to each store.
+- **Auto Live Cross-Retailer Search**: Type any item (e.g. *chips*, *Nutella*, *Tim Tam*, *milk*, *Panadol*) to automatically search both regular everyday items and specials across all 5 retailers simultaneously.
 
 ## Architecture
 

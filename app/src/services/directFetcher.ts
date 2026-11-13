@@ -1,5 +1,6 @@
 import {
   CatalogueInfo,
+  LocationSearchContext,
   SpecialItem,
   SpecialsResponse,
   StoreId,
@@ -303,14 +304,17 @@ function parseSaleFinderListHtml(
 
 async function fetchStoreSaleFinderDirect(
   storeKey: 'woolworths' | 'coles',
-  maxPages = 12
+  maxPages = 12,
+  state = ''
 ): Promise<{ items: SpecialItem[]; catalogue: CatalogueInfo | null }> {
   const catalogues = await discoverSaleFinderCatalogues(storeKey);
   if (catalogues.length === 0) {
     return { items: [], catalogue: null };
   }
 
-  const primary = catalogues[0];
+  const stateRe = state ? new RegExp(`\\b${state.trim()}\\b`, 'i') : null;
+  const primary =
+    (stateRe && catalogues.find((c) => stateRe.test(c.name))) || catalogues[0];
   const seen = new Map<string, SpecialItem>();
 
   const p1Res = await fetchWithTimeout(`${primary.listUrl}?qs=1,,,,`);
@@ -358,6 +362,8 @@ interface AldiRawProduct {
   brandName?: string;
   urlSlugText?: string;
   sellingSize?: string;
+  discontinued?: boolean;
+  notForSaleReason?: string;
   onSaleDate?: string;
   onSaleDateDisplay?: string;
   price?: {
@@ -374,7 +380,11 @@ interface AldiRawProduct {
   badges?: Array<string | { text?: string; label?: string }>;
 }
 
-function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | null {
+function mapAldiItem(
+  item: AldiRawProduct,
+  sourceLabel: string,
+  locationCtx: LocationSearchContext = {}
+): SpecialItem | null {
   if (!item?.name || !item?.price) return null;
 
   const rawPrice =
@@ -441,6 +451,20 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
       }`
     : item.onSaleDateDisplay || 'Everyday Range';
 
+  const inStock =
+    !item.discontinued &&
+    !/OUT_OF_STOCK|SOLD_OUT|UNAVAILABLE/i.test(
+      String(item.notForSaleReason || '')
+    );
+  const localStoreName = locationCtx.aldiStoreName || null;
+  const stockLabel = inStock
+    ? localStoreName
+      ? `In Range • ${localStoreName}`
+      : 'In-Store Range'
+    : localStoreName
+    ? `Out of Stock • ${localStoreName}`
+    : 'Out of Stock';
+
   return {
     id: `aldi-${item.sku || slug}`,
     store: 'aldi',
@@ -448,6 +472,7 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
     title: fullTitle,
     brand: brand || null,
     packageSize: decodeHtmlEntities(item.sellingSize || '') || null,
+    sku: item.sku ? String(item.sku) : null,
     price: savings.price,
     priceText: item.price.amountRelevantDisplay || `$${savings.price.toFixed(2)}`,
     wasPrice: savings.wasPrice,
@@ -467,6 +492,9 @@ function mapAldiItem(item: AldiRawProduct, sourceLabel: string): SpecialItem | n
       : `${ALDI_WEB_BASE}/special-buys/`,
     catalogueName: `ALDI ${sourceLabel}`,
     validDates,
+    inStock,
+    stockLabel,
+    localStoreName,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -485,8 +513,14 @@ async function queryAldiDirect(params: Record<string, string | number>) {
   return res.json();
 }
 
-export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> {
+export async function fetchAldiDirect(
+  searchQuery = '',
+  locationCtx: LocationSearchContext = {}
+): Promise<SpecialItem[]> {
   const seen = new Map<string, SpecialItem>();
+  const spParam: Record<string, string> = locationCtx.aldiStoreId
+    ? { servicePoint: locationCtx.aldiStoreId }
+    : {};
 
   if (searchQuery.trim()) {
     const json = await queryAldiDirect({
@@ -494,9 +528,10 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
       limit: 32,
       offset: 0,
       sort: 'relevance',
+      ...spParam,
     });
     for (const raw of json?.data || []) {
-      const mapped = mapAldiItem(raw, 'ALDI Range & Specials');
+      const mapped = mapAldiItem(raw, 'ALDI Range & Specials', locationCtx);
       if (mapped && !seen.has(mapped.id)) seen.set(mapped.id, mapped);
     }
     return Array.from(seen.values());
@@ -506,6 +541,7 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
     limit: 12,
     offset: 0,
     sort: 'relevance',
+    ...spParam,
   });
   const facets = discovery?.meta?.facets || [];
   const catFacet = facets.find((f: { name?: string }) => f.name === 'category-tree');
@@ -576,6 +612,7 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
           limit: col.limit,
           offset: 0,
           sort: 'relevance',
+          ...spParam,
         });
         data = res?.data || [];
       } catch {
@@ -588,6 +625,7 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
             limit: col.limit,
             offset: 0,
             sort: 'relevance',
+            ...spParam,
           });
           data = res2?.data || [];
         } catch {
@@ -595,7 +633,7 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
         }
       }
       for (const raw of data) {
-        const mapped = mapAldiItem(raw, col.label);
+        const mapped = mapAldiItem(raw, col.label, locationCtx);
         if (mapped && !seen.has(mapped.id)) seen.set(mapped.id, mapped);
       }
     })
@@ -603,7 +641,7 @@ export async function fetchAldiDirect(searchQuery = ''): Promise<SpecialItem[]> 
 
   if (seen.size === 0) {
     for (const raw of discovery?.data || []) {
-      const mapped = mapAldiItem(raw, 'Special Buys');
+      const mapped = mapAldiItem(raw, 'Special Buys', locationCtx);
       if (mapped && !seen.has(mapped.id)) seen.set(mapped.id, mapped);
     }
   }
@@ -615,14 +653,26 @@ const EVERYDAY_STAPLES_QUERIES = [
   'milk',
   'bread',
   'eggs',
-  'chicken breast',
-  'coffee',
-  'pasta',
-  'cheese',
+  'chips',
+  'chocolate',
+  'soft drink',
   'biscuits',
+  'coffee',
+  'cereal',
+  'pasta',
+  'rice',
+  'cheese',
+  'yogurt',
+  'chicken breast',
+  'apples',
+  'ice cream',
 ];
 
-async function fetchEverydayBrowseRange(): Promise<{
+const COLES_GENTLE_STAPLES = new Set(['milk', 'chips', 'coffee', 'cheese']);
+
+async function fetchEverydayBrowseRange(
+  locationCtx: LocationSearchContext = {}
+): Promise<{
   woolworths: SpecialItem[];
   coles: SpecialItem[];
   iga: SpecialItem[];
@@ -631,24 +681,30 @@ async function fetchEverydayBrowseRange(): Promise<{
   const colesMap = new Map<string, SpecialItem>();
   const igaMap = new Map<string, SpecialItem>();
 
-  await Promise.allSettled(
-    EVERYDAY_STAPLES_QUERIES.map(async (term) => {
-      const [ww, cl, ig] = await Promise.allSettled([
-        searchWoolworthsProducts(term, 6),
-        searchColesProducts(term, 6),
-        searchIgaProducts(term, 6),
-      ]);
-      if (ww.status === 'fulfilled') {
-        for (const item of ww.value) wwMap.set(item.id, item);
-      }
-      if (cl.status === 'fulfilled') {
-        for (const item of cl.value) colesMap.set(item.id, item);
-      }
-      if (ig.status === 'fulfilled') {
-        for (const item of ig.value) igaMap.set(item.id, item);
-      }
-    })
-  );
+  const batchSize = 4;
+  for (let i = 0; i < EVERYDAY_STAPLES_QUERIES.length; i += batchSize) {
+    const batch = EVERYDAY_STAPLES_QUERIES.slice(i, i + batchSize);
+    await Promise.allSettled(
+      batch.map(async (term) => {
+        const [ww, cl, ig] = await Promise.allSettled([
+          searchWoolworthsProducts(term, 10, locationCtx),
+          COLES_GENTLE_STAPLES.has(term)
+            ? searchColesProducts(term, 12, locationCtx)
+            : Promise.resolve([]),
+          searchIgaProducts(term, 8, locationCtx),
+        ]);
+        if (ww.status === 'fulfilled') {
+          for (const item of ww.value) wwMap.set(item.id, item);
+        }
+        if (cl.status === 'fulfilled') {
+          for (const item of cl.value) colesMap.set(item.id, item);
+        }
+        if (ig.status === 'fulfilled') {
+          for (const item of ig.value) igaMap.set(item.id, item);
+        }
+      })
+    );
+  }
 
   return {
     woolworths: Array.from(wwMap.values()),
@@ -683,12 +739,14 @@ function interleaveStores(storeLists: SpecialItem[][]): SpecialItem[] {
  * Download everyday browse items + weekly sales directly on the iPhone
  * from Woolworths, Coles, ALDI & IGA without needing a companion PC server!
  */
-export async function downloadAllSpecialsOnDevice(): Promise<SpecialsResponse> {
+export async function downloadAllSpecialsOnDevice(
+  locationCtx: LocationSearchContext = {}
+): Promise<SpecialsResponse> {
   const [wwCatRes, colesCatRes, aldiRes, everydayRes] = await Promise.allSettled([
-    fetchStoreSaleFinderDirect('woolworths', 10),
-    fetchStoreSaleFinderDirect('coles', 10),
-    fetchAldiDirect(),
-    fetchEverydayBrowseRange(),
+    fetchStoreSaleFinderDirect('woolworths', 10, locationCtx.state || ''),
+    fetchStoreSaleFinderDirect('coles', 10, locationCtx.state || ''),
+    fetchAldiDirect('', locationCtx),
+    fetchEverydayBrowseRange(locationCtx),
   ]);
 
   const wwSpecials = wwCatRes.status === 'fulfilled' ? wwCatRes.value.items : [];

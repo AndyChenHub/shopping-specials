@@ -13,12 +13,19 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, STORE_THEMES } from '../theme/colors';
-import { CompetitorQuote, SpecialItem } from '../types/specials';
+import {
+  CompetitorQuote,
+  SpecialItem,
+  UserStoreLocation,
+} from '../types/specials';
 import { compareCompetitorPrices } from '../services/api';
+import { toLocationSearchContext } from '../services/locationService';
 
 interface SpecialDetailModalProps {
   item: SpecialItem | null;
   isSaved: boolean;
+  userLocation?: UserStoreLocation | null;
+  onOpenLocationPicker?: () => void;
   onClose: () => void;
   onToggleSave: (item: SpecialItem) => void;
 }
@@ -26,6 +33,8 @@ interface SpecialDetailModalProps {
 export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
   item,
   isSaved,
+  userLocation = null,
+  onOpenLocationPicker,
   onClose,
   onToggleSave,
 }) => {
@@ -34,21 +43,27 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
   const [comparing, setComparing] = useState<boolean>(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
-  const loadCompetitors = useCallback(async (target: SpecialItem) => {
-    setComparing(true);
-    setCompareError(null);
-    try {
-      const res = await compareCompetitorPrices(target);
-      setQuotes(res.quotes);
-      setQueryUsed(res.queryUsed);
-    } catch (err) {
-      setCompareError(
-        err instanceof Error ? err.message : 'Unable to fetch competitor prices'
-      );
-    } finally {
-      setComparing(false);
-    }
-  }, []);
+  const loadCompetitors = useCallback(
+    async (target: SpecialItem) => {
+      setComparing(true);
+      setCompareError(null);
+      try {
+        const res = await compareCompetitorPrices(
+          target,
+          toLocationSearchContext(userLocation)
+        );
+        setQuotes(res.quotes);
+        setQueryUsed(res.queryUsed);
+      } catch (err) {
+        setCompareError(
+          err instanceof Error ? err.message : 'Unable to fetch competitor prices'
+        );
+      } finally {
+        setComparing(false);
+      }
+    },
+    [userLocation]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -65,7 +80,7 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
     setCompareError(null);
     setComparing(true);
 
-    compareCompetitorPrices(item)
+    compareCompetitorPrices(item, toLocationSearchContext(userLocation))
       .then((res) => {
         if (!cancelled) {
           setQuotes(res.quotes);
@@ -88,7 +103,7 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [item]);
+  }, [item, userLocation]);
 
   const lowestQuote = useMemo(() => {
     if (!quotes) return null;
@@ -96,9 +111,17 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
       (q) => q.matched && typeof q.price === 'number' && q.price > 0
     );
     if (matchedWithPrice.length === 0) return null;
-    return matchedWithPrice.reduce((min, cur) =>
+    const inStockCandidates = matchedWithPrice.filter((q) => q.inStock !== false);
+    const pool =
+      inStockCandidates.length > 0 ? inStockCandidates : matchedWithPrice;
+    return pool.reduce((min, cur) =>
       (cur.price as number) < (min.price as number) ? cur : min
     );
+  }, [quotes]);
+
+  const currentItemLiveQuote = useMemo(() => {
+    if (!quotes) return null;
+    return quotes.find((q) => q.isCurrentItem) || null;
   }, [quotes]);
 
   if (!item) return null;
@@ -110,6 +133,22 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
         (item.saveAmount !== null && item.saveAmount > 0) ||
         item.promoText)
   );
+
+  const effectiveInStock =
+    typeof currentItemLiveQuote?.inStock === 'boolean'
+      ? currentItemLiveQuote.inStock
+      : typeof item.inStock === 'boolean'
+      ? item.inStock
+      : null;
+
+  const effectiveStockLabel =
+    currentItemLiveQuote?.stockLabel ||
+    item.stockLabel ||
+    (effectiveInStock === true
+      ? 'In Stock'
+      : effectiveInStock === false
+      ? 'Out of Stock'
+      : null);
 
   const handleOpenWeb = () => {
     if (item.productUrl) {
@@ -176,6 +215,36 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
               <View style={styles.categoryBadge}>
                 <Text style={styles.categoryBadgeText}>{item.category}</Text>
               </View>
+              {typeof effectiveInStock === 'boolean' && (
+                <View
+                  style={[
+                    styles.mainStockBadge,
+                    effectiveInStock
+                      ? styles.mainStockBadgeIn
+                      : styles.mainStockBadgeOut,
+                  ]}
+                >
+                  <Ionicons
+                    name={
+                      effectiveInStock ? 'checkmark-circle' : 'close-circle'
+                    }
+                    size={14}
+                    color={effectiveInStock ? COLORS.savingsText : COLORS.danger}
+                  />
+                  <Text
+                    style={[
+                      styles.mainStockBadgeText,
+                      {
+                        color: effectiveInStock
+                          ? COLORS.savingsText
+                          : COLORS.danger,
+                      },
+                    ]}
+                  >
+                    {effectiveStockLabel}
+                  </Text>
+                </View>
+              )}
             </View>
 
             {/* Title */}
@@ -242,9 +311,47 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
               </View>
 
               <Text style={styles.compareSubtitle}>
-                Live check across Amazon AU, Woolworths, Coles, ALDI & IGA
+                Live price & stock check across Amazon AU, Woolworths, Coles, ALDI & IGA
                 {queryUsed ? ` • "${queryUsed}"` : ''}
               </Text>
+
+              {onOpenLocationPicker && (
+                <Pressable
+                  onPress={onOpenLocationPicker}
+                  style={({ pressed }) => [
+                    styles.locationContextPill,
+                    userLocation
+                      ? styles.locationContextPillActive
+                      : styles.locationContextPillEmpty,
+                    pressed && { opacity: 0.8 },
+                  ]}
+                >
+                  <Ionicons
+                    name={userLocation ? 'location' : 'location-outline'}
+                    size={15}
+                    color={userLocation ? COLORS.savingsText : COLORS.accent}
+                  />
+                  <Text
+                    style={[
+                      styles.locationContextText,
+                      userLocation && styles.locationContextTextActive,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {userLocation
+                      ? `Checking ${userLocation.suburb}, ${userLocation.state} ${userLocation.postcode} local stores`
+                      : 'Set postcode / local store to check nearby in-store stock'}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.locationContextAction,
+                      userLocation && { color: COLORS.savingsText },
+                    ]}
+                  >
+                    {userLocation ? 'Change' : 'Set Store'}
+                  </Text>
+                </Pressable>
+              )}
 
               {/* Cheapest Store Callout */}
               {!comparing &&
@@ -403,6 +510,35 @@ export const SpecialDetailModal: React.FC<SpecialDetailModalProps> = ({
                             <Text style={styles.quoteUnitPrice} numberOfLines={1}>
                               {quote.unitPrice}
                             </Text>
+                          )}
+
+                          {quote.matched && typeof quote.inStock === 'boolean' && (
+                            <View style={styles.quoteStockLine}>
+                              <View
+                                style={[
+                                  styles.quoteStockDot,
+                                  {
+                                    backgroundColor: quote.inStock
+                                      ? COLORS.savingsText
+                                      : COLORS.danger,
+                                  },
+                                ]}
+                              />
+                              <Text
+                                numberOfLines={1}
+                                style={[
+                                  styles.quoteStockText,
+                                  {
+                                    color: quote.inStock
+                                      ? COLORS.savingsText
+                                      : COLORS.danger,
+                                  },
+                                ]}
+                              >
+                                {quote.stockLabel ||
+                                  (quote.inStock ? 'In Stock' : 'Out of Stock')}
+                              </Text>
+                            </View>
                           )}
                         </View>
 
@@ -618,6 +754,27 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     color: COLORS.textSecondary,
   },
+  mainStockBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  mainStockBadgeIn: {
+    backgroundColor: COLORS.savingsBg,
+    borderColor: '#CBEBD6',
+  },
+  mainStockBadgeOut: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  mainStockBadgeText: {
+    fontWeight: '800',
+    fontSize: 12,
+  },
   title: {
     fontSize: 20,
     fontWeight: '800',
@@ -720,6 +877,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textSecondary,
     marginTop: -4,
+  },
+  locationContextPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  locationContextPillEmpty: {
+    backgroundColor: COLORS.accentSoft,
+    borderColor: '#CEE0FD',
+  },
+  locationContextPillActive: {
+    backgroundColor: COLORS.savingsBg,
+    borderColor: '#CBEBD6',
+  },
+  locationContextText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.accent,
+  },
+  locationContextTextActive: {
+    color: COLORS.textPrimary,
+  },
+  locationContextAction: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.accent,
   },
   cheaperBanner: {
     flexDirection: 'row',
@@ -893,6 +1081,22 @@ const styles = StyleSheet.create({
   quoteUnitPrice: {
     fontSize: 11,
     color: COLORS.textSecondary,
+  },
+  quoteStockLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 1,
+  },
+  quoteStockDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  quoteStockText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '700',
   },
   quoteRight: {
     alignItems: 'flex-end',

@@ -90,8 +90,9 @@ function buildConciseFallbackQuery(fullQuery, packageSize) {
     : head;
 }
 
-export async function searchWoolworthsProducts(query, limit = 10) {
-  const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(query)}`;
+export async function searchWoolworthsProducts(query, limit = 16, locationCtx = {}) {
+  const pageSize = Math.min(Math.max(limit, 20), 36);
+  const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(query)}&pageSize=${pageSize}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
@@ -99,6 +100,7 @@ export async function searchWoolworthsProducts(query, limit = 10) {
   if (!res.ok) throw new Error(`Woolworths HTTP ${res.status}`);
   const json = await res.json();
 
+  const localStoreName = locationCtx?.wwStoreName || null;
   const out = [];
   for (const bundle of json?.Products || []) {
     for (const p of bundle?.Products || []) {
@@ -130,6 +132,17 @@ export async function searchWoolworthsProducts(query, limit = 10) {
       else if (saveAmount && saveAmount > 0) promoText = `Save $${saveAmount.toFixed(2)}`;
       else if (isOnSale) promoText = 'On Special';
 
+      const inStock = Boolean(
+        p.IsInStock ?? p.InstoreIsAvailable ?? p.IsAvailable ?? true
+      );
+      const stockLabel = inStock
+        ? localStoreName
+          ? `In Stock • ${localStoreName}`
+          : 'In Stock'
+        : localStoreName
+        ? `Out of Stock • ${localStoreName}`
+        : 'Out of Stock';
+
       out.push({
         id: `woolworths-sku-${p.Stockcode || title}`,
         store: 'woolworths',
@@ -138,6 +151,7 @@ export async function searchWoolworthsProducts(query, limit = 10) {
         brand: p.Brand ? cleanText(p.Brand) : null,
         packageSize: p.PackageSize ? cleanText(p.PackageSize) : extractPackageSize(title),
         barcode: p.Barcode ? String(p.Barcode) : null,
+        sku: p.Stockcode ? String(p.Stockcode) : null,
         price: p.Price,
         priceText: `$${p.Price.toFixed(2)}`,
         wasPrice,
@@ -154,6 +168,9 @@ export async function searchWoolworthsProducts(query, limit = 10) {
           : `https://www.woolworths.com.au/shop/search/products?searchTerm=${encodeURIComponent(query)}`,
         catalogueName: isOnSale ? 'Woolworths Specials' : 'Woolworths Everyday Range',
         validDates: isOnSale ? 'Current Store Price' : 'Everyday Regular Price',
+        inStock,
+        stockLabel,
+        localStoreName,
         fetchedAt: new Date().toISOString(),
       });
       if (out.length >= limit) return out;
@@ -162,7 +179,7 @@ export async function searchWoolworthsProducts(query, limit = 10) {
   return out;
 }
 
-export async function searchColesProducts(query, limit = 10) {
+export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
   const searchUrl = `https://www.coles.com.au/search/products?q=${encodeURIComponent(query)}`;
   const res = await fetch(searchUrl, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en-AU,en;q=0.9' },
@@ -220,6 +237,23 @@ export async function searchColesProducts(query, limit = 10) {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '');
 
+    const inStock =
+      typeof r.availability === 'boolean'
+        ? r.availability
+        : r.availabilityType
+        ? !/OUT|UNAVAIL/i.test(String(r.availabilityType))
+        : true;
+    const regionTag = locationCtx?.suburb
+      ? `Coles ${locationCtx.suburb}`
+      : locationCtx?.state
+      ? `Coles ${locationCtx.state}`
+      : null;
+    const stockLabel = inStock
+      ? regionTag
+        ? `In Stock • ${regionTag}`
+        : 'In Stock'
+      : 'Out of Stock';
+
     out.push({
       id: `coles-sku-${r.id || slug}`,
       store: 'coles',
@@ -227,6 +261,7 @@ export async function searchColesProducts(query, limit = 10) {
       title: fullTitle,
       brand: brand || null,
       packageSize: size || extractPackageSize(fullTitle),
+      sku: r.id ? String(r.id) : null,
       price,
       priceText: `$${price.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -241,6 +276,9 @@ export async function searchColesProducts(query, limit = 10) {
       productUrl: r.id ? `https://www.coles.com.au/product/${slug}-${r.id}` : searchUrl,
       catalogueName: isOnSale ? 'Coles Specials' : 'Coles Everyday Range',
       validDates: isOnSale ? 'Current Store Price' : 'Everyday Regular Price',
+      inStock,
+      stockLabel,
+      localStoreName: regionTag,
       fetchedAt: new Date().toISOString(),
     });
     if (out.length >= limit) break;
@@ -248,7 +286,7 @@ export async function searchColesProducts(query, limit = 10) {
   return out;
 }
 
-export async function searchAldiProducts(query, limit = 12) {
+export async function searchAldiProducts(query, limit = 12, locationCtx = {}) {
   const validLimit = limit <= 12 ? 12 : limit <= 16 ? 16 : 24;
   const qs = new URLSearchParams({
     currency: 'AUD',
@@ -258,6 +296,9 @@ export async function searchAldiProducts(query, limit = 12) {
     offset: '0',
     sort: 'relevance',
   });
+  if (locationCtx?.aldiStoreId) {
+    qs.set('servicePoint', String(locationCtx.aldiStoreId));
+  }
   const res = await fetch(`https://api.aldi.com.au/v3/product-search?${qs.toString()}`, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
@@ -306,6 +347,20 @@ export async function searchAldiProducts(query, limit = 12) {
     const front = (item.assets || []).find((a) => a.assetType === 'FR01') || item.assets?.[0];
     const slug = item.urlSlugText || 'aldi-product';
 
+    const aldiStoreName = locationCtx?.aldiStoreName || null;
+    const inStock = !item.discontinued && !/OUT_OF_STOCK/i.test(String(item.notForSaleReason || ''));
+    const stockLabel = !inStock
+      ? aldiStoreName
+        ? `Sold Out • ${aldiStoreName}`
+        : 'Out of Stock'
+      : isSpecialBuy
+      ? aldiStoreName
+        ? `Special Buy • ${aldiStoreName}`
+        : 'Limited Special Buy'
+      : aldiStoreName
+      ? `In Range • ${aldiStoreName}`
+      : 'In-Store Range';
+
     out.push({
       id: `aldi-${item.sku || slug}`,
       store: 'aldi',
@@ -313,6 +368,7 @@ export async function searchAldiProducts(query, limit = 12) {
       title: fullTitle,
       brand: brand || null,
       packageSize: cleanText(item.sellingSize || '') || extractPackageSize(fullTitle),
+      sku: item.sku ? String(item.sku) : null,
       price: rawPrice,
       priceText: item.price.amountRelevantDisplay || `$${rawPrice.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -329,6 +385,9 @@ export async function searchAldiProducts(query, limit = 12) {
         : `https://www.aldi.com.au/results?q=${encodeURIComponent(query)}`,
       catalogueName: isOnSale ? 'ALDI Special Buys' : 'ALDI Everyday Low Price',
       validDates: item.onSaleDateDisplay || 'Everyday Range',
+      inStock,
+      stockLabel,
+      localStoreName: aldiStoreName,
       fetchedAt: new Date().toISOString(),
     });
     if (out.length >= limit) break;
@@ -336,8 +395,10 @@ export async function searchAldiProducts(query, limit = 12) {
   return out;
 }
 
-export async function searchIgaProducts(query, limit = 10) {
-  const url = `https://www.igashop.com.au/api/storefront/stores/${IGA_STORE_ID}/search?q=${encodeURIComponent(query)}&take=${limit}`;
+export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
+  const activeStoreId = locationCtx?.igaStoreId || IGA_STORE_ID;
+  const localStoreName = locationCtx?.igaStoreName || null;
+  const url = `https://www.igashop.com.au/api/storefront/stores/${encodeURIComponent(activeStoreId)}/search?q=${encodeURIComponent(query)}&take=${limit}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
@@ -387,13 +448,23 @@ export async function searchIgaProducts(query, limit = 10) {
       promoText = `Save $${savings.saveAmount.toFixed(2)}`;
     }
 
+    const inStock = item.available !== false;
+    const stockLabel = inStock
+      ? localStoreName
+        ? `In Stock • ${localStoreName}`
+        : 'In Stock'
+      : localStoreName
+      ? `Out of Stock • ${localStoreName}`
+      : 'Out of Stock';
+
     out.push({
-      id: `iga-${item.productId || item.sku || fullTitle}`,
+      id: `iga-${activeStoreId}-${item.productId || item.sku || fullTitle}`,
       store: 'iga',
       storeName: 'IGA',
       title: fullTitle,
       brand: brand || null,
       packageSize: sizeStr || extractPackageSize(fullTitle),
+      sku: item.sku ? String(item.sku) : null,
       price,
       priceText: `$${price.toFixed(2)}`,
       wasPrice: savings.wasPrice,
@@ -406,8 +477,11 @@ export async function searchIgaProducts(query, limit = 10) {
       category: classifyCategory(item.defaultCategory?.[0]?.categoryBreadcrumb || '', fullTitle, 'iga'),
       imageUrl: item.image?.default || item.image?.cell || null,
       productUrl: `https://www.igashop.com.au/search?q=${encodeURIComponent(fullTitle)}`,
-      catalogueName: isOnSale ? 'IGA Specials' : 'IGA Everyday Range',
+      catalogueName: localStoreName || (isOnSale ? 'IGA Specials' : 'IGA Everyday Range'),
       validDates: isOnSale ? 'Current Store Offer' : 'Everyday Regular Price',
+      inStock,
+      stockLabel,
+      localStoreName,
       fetchedAt: new Date().toISOString(),
     });
   }
@@ -424,12 +498,13 @@ export async function searchAmazonAuProducts(query, limit = 8) {
   const html = await res.text();
 
   const out = [];
-  const regex =
-    /<div[^>]*data-asin="([A-Z0-9]{10})"[^>]*data-component-type="s-search-result"[^>]*>([\s\S]*?)(?=<div[^>]*data-component-type="s-search-result"|<div[^>]*class="s-main-slot|$)/gi;
-  let m;
-  while ((m = regex.exec(html)) !== null) {
-    const asin = m[1];
-    const block = m[2];
+  const parts = html.split(/(?=<div[^>]*data-component-type="s-search-result"[^>]*>)/i);
+  for (let i = 1; i < parts.length; i++) {
+    const block = parts[i];
+    const openTag = block.slice(0, 360);
+    const asinMatch = openTag.match(/data-asin="([A-Z0-9]{10})"/i);
+    if (!asinMatch) continue;
+    const asin = asinMatch[1];
     if (/s-sponsored-label|AdHolder/i.test(block.slice(0, 900))) continue;
 
     const rawTitle =
@@ -480,6 +555,9 @@ export async function searchAmazonAuProducts(query, limit = 8) {
       productUrl: `https://www.amazon.com.au/dp/${asin}`,
       catalogueName: 'Amazon.com.au',
       validDates: 'Live Amazon Price',
+      inStock: true,
+      stockLabel: 'In Stock Online',
+      localStoreName: 'Amazon AU Delivery',
       fetchedAt: new Date().toISOString(),
     });
     if (out.length >= limit) break;
@@ -576,12 +654,27 @@ const COMPETITORS = [
   { store: 'amazon', storeName: 'Amazon AU', fetcher: searchAmazonAuProducts },
 ];
 
-export async function compareItemAcrossCompetitors(targetItem) {
+export async function compareItemAcrossCompetitors(targetItem, locationCtx = {}) {
   const queryUsed = buildCleanSearchQuery(targetItem);
 
   const settled = await Promise.allSettled(
     COMPETITORS.map(async (comp) => {
-      if (comp.store === targetItem.store && targetItem.price) {
+      const isOwnStore = Boolean(comp.store === targetItem.store && targetItem.price);
+      const needsLiveLocalStock =
+        isOwnStore &&
+        (targetItem.inStock === undefined ||
+          targetItem.inStock === null ||
+          (comp.store === 'iga' &&
+            locationCtx?.igaStoreName &&
+            targetItem.localStoreName !== locationCtx.igaStoreName) ||
+          (comp.store === 'woolworths' &&
+            locationCtx?.wwStoreName &&
+            targetItem.localStoreName !== locationCtx.wwStoreName) ||
+          (comp.store === 'aldi' &&
+            locationCtx?.aldiStoreName &&
+            targetItem.localStoreName !== locationCtx.aldiStoreName));
+
+      if (isOwnStore && !needsLiveLocalStock) {
         return {
           store: comp.store,
           storeName: comp.storeName,
@@ -598,19 +691,66 @@ export async function compareItemAcrossCompetitors(targetItem) {
           unitPrice: targetItem.unitPrice || null,
           imageUrl: targetItem.imageUrl || null,
           productUrl: targetItem.productUrl || fallbackSearchUrl(comp.store, queryUsed),
+          inStock: targetItem.inStock ?? true,
+          stockLabel: targetItem.stockLabel || 'In Stock',
+          localStoreName: targetItem.localStoreName || null,
           isCurrentItem: true,
         };
       }
 
-      let candidates = await comp.fetcher(queryUsed, 8);
+      let candidates = [];
+      try {
+        candidates = await comp.fetcher(queryUsed, 8, locationCtx);
+      } catch {
+        candidates = [];
+      }
       let best = pickBestCandidate(targetItem, candidates);
       if (!best) {
         const shortQ = buildConciseFallbackQuery(queryUsed, targetItem.packageSize);
         if (shortQ) {
-          candidates = await comp.fetcher(shortQ, 8);
-          best = pickBestCandidate(targetItem, candidates);
+          try {
+            candidates = await comp.fetcher(shortQ, 8, locationCtx);
+            best = pickBestCandidate(targetItem, candidates);
+          } catch {
+            // ignore fallback error
+          }
         }
       }
+
+      if (isOwnStore) {
+        return {
+          store: comp.store,
+          storeName: comp.storeName,
+          matched: true,
+          title: targetItem.title,
+          packageSize: targetItem.packageSize || best?.packageSize || null,
+          price:
+            comp.store === 'iga' && best?.price ? best.price : Number(targetItem.price),
+          priceText:
+            comp.store === 'iga' && best?.priceText
+              ? best.priceText
+              : targetItem.priceText || `$${Number(targetItem.price).toFixed(2)}`,
+          wasPrice: targetItem.wasPrice ? Number(targetItem.wasPrice) : best?.wasPrice ?? null,
+          saveAmount: targetItem.saveAmount
+            ? Number(targetItem.saveAmount)
+            : best?.saveAmount ?? null,
+          isOnSale: Boolean(targetItem.isOnSale ?? best?.isOnSale),
+          isHalfPrice: Boolean(targetItem.isHalfPrice ?? best?.isHalfPrice),
+          promoText: targetItem.promoText || best?.promoText || null,
+          unitPrice: targetItem.unitPrice || best?.unitPrice || null,
+          imageUrl: targetItem.imageUrl || best?.imageUrl || null,
+          productUrl:
+            best?.productUrl ||
+            targetItem.productUrl ||
+            fallbackSearchUrl(comp.store, queryUsed),
+          inStock: best ? best.inStock : targetItem.inStock ?? null,
+          stockLabel:
+            best?.stockLabel || targetItem.stockLabel || 'Check Local Store Stock',
+          localStoreName: best?.localStoreName || targetItem.localStoreName || null,
+          isCurrentItem: true,
+        };
+      }
+
       if (best) {
         return {
           store: comp.store,
@@ -628,6 +768,9 @@ export async function compareItemAcrossCompetitors(targetItem) {
           unitPrice: best.unitPrice,
           imageUrl: best.imageUrl,
           productUrl: best.productUrl || fallbackSearchUrl(comp.store, queryUsed),
+          inStock: best.inStock ?? true,
+          stockLabel: best.stockLabel || 'In Stock',
+          localStoreName: best.localStoreName || null,
         };
       }
 
@@ -647,6 +790,9 @@ export async function compareItemAcrossCompetitors(targetItem) {
         unitPrice: null,
         imageUrl: null,
         productUrl: fallbackSearchUrl(comp.store, queryUsed),
+        inStock: null,
+        stockLabel: 'Check Store Website',
+        localStoreName: null,
       };
     })
   );

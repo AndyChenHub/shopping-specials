@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
@@ -23,12 +23,18 @@ import {
   StoreFilter,
   StoreId,
   StoreStat,
+  UserStoreLocation,
 } from './src/types/specials';
 import {
   fetchSpecials,
   loadCachedFeedFromDevice,
   triggerWebSync,
 } from './src/services/api';
+import {
+  loadSavedUserLocation,
+  saveUserLocation,
+  toLocationSearchContext,
+} from './src/services/locationService';
 import {
   loadSavedSpecials,
   persistSavedSpecials,
@@ -43,6 +49,7 @@ import { SpecialCard } from './src/components/SpecialCard';
 import { SpecialDetailModal } from './src/components/SpecialDetailModal';
 import { SavedListView } from './src/components/SavedListView';
 import { ServerSettingsModal } from './src/components/ServerSettingsModal';
+import { LocationStoreModal } from './src/components/LocationStoreModal';
 
 const DEFAULT_CATEGORIES = [
   'Fruit & Veg',
@@ -68,6 +75,8 @@ function MainApp() {
   // Data state
   const [allItems, setAllItems] = useState<SpecialItem[]>([]);
   const [liveExtraItems, setLiveExtraItems] = useState<SpecialItem[]>([]);
+  const [liveSearchedQuery, setLiveSearchedQuery] = useState<string>('');
+  const searchSeqRef = useRef<number>(0);
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
   const [storeStats, setStoreStats] = useState<
     Partial<Record<StoreId, StoreStat>> | null
@@ -87,8 +96,16 @@ function MainApp() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedStore, setSelectedStore] = useState<StoreFilter>('all');
   const [dealFilter, setDealFilter] = useState<DealFilter>('all');
+  const [inStockOnly, setInStockOnly] = useState<boolean>(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [sortBy, setSortBy] = useState<SortOption>('featured');
+
+  // User location & local stores
+  const [userLocation, setUserLocation] = useState<UserStoreLocation | null>(
+    null
+  );
+  const [locationModalOpen, setLocationModalOpen] = useState<boolean>(false);
+  const resumeDetailAfterLocationRef = useRef<SpecialItem | null>(null);
 
   // Saved shortlist & modals
   const [savedItems, setSavedItems] = useState<SpecialItem[]>([]);
@@ -123,15 +140,21 @@ function MainApp() {
     [savedItems]
   );
 
-  // Load saved deals from AsyncStorage
+  // Load saved deals & saved user location from AsyncStorage
   useEffect(() => {
     loadSavedSpecials().then(setSavedItems);
+    loadSavedUserLocation().then(setUserLocation);
   }, []);
 
   const applySpecialsResponse = useCallback(
-    (data: Awaited<ReturnType<typeof fetchSpecials>>) => {
+    (
+      data: Awaited<ReturnType<typeof fetchSpecials>>,
+      preserveLiveSearch = false
+    ) => {
       setAllItems(data.items || []);
-      setLiveExtraItems([]);
+      if (!preserveLiveSearch) {
+        setLiveExtraItems([]);
+      }
       if (data.categories?.length) setCategories(data.categories);
       setStoreStats(data.storeStats || null);
       setCatalogues(data.catalogues || null);
@@ -180,21 +203,103 @@ function MainApp() {
     }
   }, [applySpecialsResponse]);
 
-  const handleLiveWebSearch = useCallback(async () => {
-    const q = searchQuery.trim();
-    if (!q) return;
-    try {
-      setLiveSearching(true);
-      const res = await fetchSpecials({ q, live: true });
-      const baseIds = new Set(allItems.map((i) => i.id));
-      const extras = (res.items || []).filter((i) => !baseIds.has(i.id));
-      setLiveExtraItems(extras);
-    } catch {
-      // Keep local instant search results if offline
-    } finally {
-      setLiveSearching(false);
+  const runLiveSearchForQuery = useCallback(
+    async (rawQuery: string, explicitLoc?: UserStoreLocation | null) => {
+      const q = rawQuery.trim();
+      if (q.length < 2) {
+        setLiveSearching(false);
+        return;
+      }
+      const seq = ++searchSeqRef.current;
+      const activeLoc =
+        explicitLoc !== undefined ? explicitLoc : userLocation;
+      try {
+        setLiveSearching(true);
+        const res = await fetchSpecials({
+          q,
+          live: true,
+          locationCtx: toLocationSearchContext(activeLoc),
+        });
+        if (seq !== searchSeqRef.current) return;
+        setLiveExtraItems(res.items || []);
+        setLiveSearchedQuery(q.toLowerCase());
+      } catch {
+        // Keep local instant search results if offline
+      } finally {
+        if (seq === searchSeqRef.current) {
+          setLiveSearching(false);
+        }
+      }
+    },
+    [userLocation]
+  );
+
+  const handleSaveLocation = useCallback(
+    async (nextLoc: UserStoreLocation | null) => {
+      await saveUserLocation(nextLoc);
+      setUserLocation(nextLoc);
+
+      const q = searchQuery.trim();
+      if (q.length >= 2) {
+        runLiveSearchForQuery(q, nextLoc);
+      }
+
+      // Sync regional catalogues & local store everyday inventory in background
+      try {
+        setRefreshing(true);
+        const updated = await triggerWebSync(toLocationSearchContext(nextLoc));
+        applySpecialsResponse(updated, q.length >= 2);
+      } catch {
+        // Ignore background refresh error if offline
+      } finally {
+        setRefreshing(false);
+      }
+    },
+    [applySpecialsResponse, runLiveSearchForQuery, searchQuery]
+  );
+
+  const handleOpenLocationFromDetail = useCallback(() => {
+    if (Platform.OS === 'ios' && detailItem) {
+      resumeDetailAfterLocationRef.current = detailItem;
+      setDetailItem(null);
+      setTimeout(() => setLocationModalOpen(true), 280);
+    } else {
+      setLocationModalOpen(true);
     }
-  }, [searchQuery, allItems]);
+  }, [detailItem]);
+
+  const handleCloseLocationModal = useCallback(() => {
+    setLocationModalOpen(false);
+    if (resumeDetailAfterLocationRef.current) {
+      const target = resumeDetailAfterLocationRef.current;
+      resumeDetailAfterLocationRef.current = null;
+      setTimeout(() => setDetailItem(target), 280);
+    }
+  }, []);
+
+  const handleLiveWebSearch = useCallback(() => {
+    runLiveSearchForQuery(searchQuery);
+  }, [runLiveSearchForQuery, searchQuery]);
+
+  // Automatically search all stores (regular + on-sale items) as the user types!
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      searchSeqRef.current += 1;
+      setLiveSearching(false);
+      if (!q) {
+        setLiveExtraItems([]);
+        setLiveSearchedQuery('');
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      runLiveSearchForQuery(q);
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery, runLiveSearchForQuery]);
 
   const handleToggleSave = useCallback((item: SpecialItem) => {
     setSavedItems((prev) => {
@@ -219,29 +324,44 @@ function MainApp() {
     );
   }, []);
 
-  const combinedItems = useMemo(() => {
-    return searchQuery.trim() && liveExtraItems.length > 0
-      ? [...liveExtraItems, ...allItems]
-      : allItems;
-  }, [allItems, liveExtraItems, searchQuery]);
+  // Pool of items matching the current search query (includes live full-range regular + sale items!)
+  const queryMatchedPool = useMemo(() => {
+    const qNorm = searchQuery.trim().toLowerCase();
+    if (!qNorm) return allItems;
+
+    const tokens = qNorm.split(/\s+/).filter(Boolean);
+    const matchesTokens = (item: SpecialItem) => {
+      const hay = `${item.title} ${item.brand || ''} ${item.category} ${
+        item.promoText || ''
+      } ${item.storeName}`.toLowerCase();
+      return tokens.every((t) => hay.includes(t));
+    };
+
+    const localMatches = allItems.filter(matchesTokens);
+
+    // If live store search completed for this query, preserve ALL returned store items (regular & on-sale)
+    const primaryLive =
+      liveSearchedQuery === qNorm
+        ? liveExtraItems
+        : liveExtraItems.filter(matchesTokens);
+
+    const out: SpecialItem[] = [];
+    const seen = new Set<string>();
+    for (const item of [...primaryLive, ...localMatches]) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id);
+        out.push(item);
+      }
+    }
+    return out;
+  }, [allItems, liveExtraItems, liveSearchedQuery, searchQuery]);
 
   // Dynamic counts for All Items / On Sale / ½ Price and Amazon live search pills
   const filterCounts = useMemo(() => {
-    const tokens = searchQuery
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean);
-
-    const searchAndCatPool = combinedItems.filter((item) => {
+    const hasSearch = searchQuery.trim().length > 0;
+    const searchAndCatPool = queryMatchedPool.filter((item) => {
       if (selectedCategory !== 'All' && item.category !== selectedCategory) {
         return false;
-      }
-      if (tokens.length > 0) {
-        const hay = `${item.title} ${item.brand || ''} ${item.category} ${
-          item.promoText || ''
-        } ${item.storeName}`.toLowerCase();
-        if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
@@ -255,7 +375,7 @@ function MainApp() {
     const effectiveStats: Partial<Record<StoreId, StoreStat>> = {
       ...(storeStats || {}),
     };
-    if (tokens.length > 0 || selectedCategory !== 'All') {
+    if (hasSearch || selectedCategory !== 'All') {
       for (const st of ['woolworths', 'coles', 'aldi', 'iga', 'amazon'] as StoreId[]) {
         const list = searchAndCatPool.filter((i) => i.store === st);
         effectiveStats[st] = {
@@ -271,11 +391,12 @@ function MainApp() {
       totalItemsCount: storeScoped.length,
       totalOnSaleCount: storeScoped.filter(isItemOnSale).length,
       totalHalfPriceCount: storeScoped.filter((i) => i.isHalfPrice).length,
+      inStockCount: storeScoped.filter((i) => i.inStock === true).length,
       amazonCount,
       effectiveStats,
     };
   }, [
-    combinedItems,
+    queryMatchedPool,
     searchQuery,
     selectedCategory,
     selectedStore,
@@ -283,26 +404,15 @@ function MainApp() {
     isItemOnSale,
   ]);
 
-  // Instant client-side filtering & sorting across all downloaded items & specials
+  // Instant client-side filtering & sorting across all regular + sale items
   const filteredItems = useMemo(() => {
-    const tokens = searchQuery
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter(Boolean);
-
-    const matches = combinedItems.filter((item) => {
+    const matches = queryMatchedPool.filter((item) => {
       if (selectedStore !== 'all' && item.store !== selectedStore) return false;
       if (dealFilter === 'half_price' && !item.isHalfPrice) return false;
       if (dealFilter === 'sale' && !isItemOnSale(item)) return false;
+      if (inStockOnly && item.inStock !== true) return false;
       if (selectedCategory !== 'All' && item.category !== selectedCategory) {
         return false;
-      }
-      if (tokens.length > 0) {
-        const hay = `${item.title} ${item.brand || ''} ${item.category} ${
-          item.promoText || ''
-        } ${item.storeName}`.toLowerCase();
-        if (!tokens.every((t) => hay.includes(t))) return false;
       }
       return true;
     });
@@ -322,10 +432,10 @@ function MainApp() {
       return 0;
     });
   }, [
-    combinedItems,
-    searchQuery,
+    queryMatchedPool,
     selectedStore,
     dealFilter,
+    inStockOnly,
     selectedCategory,
     sortBy,
     isItemOnSale,
@@ -349,6 +459,8 @@ function MainApp() {
         lastSyncedAt={lastSyncedAt}
         syncing={refreshing}
         hasAppUpdate={Boolean(releaseCheck?.hasUpdate)}
+        userLocation={userLocation}
+        onLocationPress={() => setLocationModalOpen(true)}
         onSyncPress={handleSyncFromWeb}
         onSettingsPress={() => setSettingsOpen(true)}
       />
@@ -392,9 +504,12 @@ function MainApp() {
             onStoreChange={setSelectedStore}
             dealFilter={dealFilter}
             onDealFilterChange={setDealFilter}
+            inStockOnly={inStockOnly}
+            onToggleInStockOnly={() => setInStockOnly((prev) => !prev)}
             totalItemsCount={filterCounts.totalItemsCount}
             totalOnSaleCount={filterCounts.totalOnSaleCount}
             totalHalfPriceCount={filterCounts.totalHalfPriceCount}
+            inStockCount={filterCounts.inStockCount}
             amazonCount={filterCounts.amazonCount}
             selectedCategory={selectedCategory}
             onCategoryChange={setSelectedCategory}
@@ -475,11 +590,18 @@ function MainApp() {
                     </View>
                   )}
                   <Text style={styles.resultsCountText}>
+                    {liveSearching
+                      ? `Searching all stores for "${searchQuery.trim()}"… • `
+                      : ''}
                     Showing {filteredItems.length}{' '}
                     {filteredItems.length === 1 ? 'item' : 'items'}
                     {dealFilter === 'sale' ? ' • On Sale filter active' : ''}
                     {dealFilter === 'half_price' ? ' • ½ Price filter active' : ''}
-                    {' • Tap any item to compare prices'}
+                    {inStockOnly ? ' • In Stock filter active' : ''}
+                    {userLocation
+                      ? ` • ${userLocation.suburb} ${userLocation.postcode}`
+                      : ''}
+                    {' • Tap any item to compare prices & stock'}
                   </Text>
                 </View>
               }
@@ -495,6 +617,7 @@ function MainApp() {
                     onPress={() => {
                       setSelectedStore('all');
                       setDealFilter('all');
+                      setInStockOnly(false);
                       setSelectedCategory('All');
                       setSearchQuery('');
                     }}
@@ -579,8 +702,17 @@ function MainApp() {
       <SpecialDetailModal
         item={detailItem}
         isSaved={detailItem ? savedIdSet.has(detailItem.id) : false}
+        userLocation={userLocation}
+        onOpenLocationPicker={handleOpenLocationFromDetail}
         onClose={() => setDetailItem(null)}
         onToggleSave={handleToggleSave}
+      />
+
+      <LocationStoreModal
+        visible={locationModalOpen}
+        currentLocation={userLocation}
+        onClose={handleCloseLocationModal}
+        onSaveLocation={handleSaveLocation}
       />
 
       <ServerSettingsModal

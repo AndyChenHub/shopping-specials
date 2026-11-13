@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   CompetitorQuote,
   DealFilter,
+  LocationSearchContext,
   SortOption,
   SpecialItem,
   SpecialsResponse,
@@ -14,9 +15,13 @@ import {
   compareItemAcrossCompetitorsOnDevice,
   searchAllCompetitorsLive,
 } from './competitorSearch';
+import {
+  loadSavedUserLocation,
+  toLocationSearchContext,
+} from './locationService';
 
 const CUSTOM_API_URL_KEY = '@aussie_specials_custom_api_url';
-const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v2';
+const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v3';
 const DEFAULT_BACKEND_PORT = 3001;
 
 export type DataSourceMode = 'on-device' | 'companion-server';
@@ -138,19 +143,38 @@ async function shouldTryCompanionServerFirst(): Promise<boolean> {
   return Boolean(getLanMetroHost());
 }
 
+function appendLocationParams(
+  query: URLSearchParams,
+  loc: LocationSearchContext
+) {
+  if (loc.postcode) query.set('postcode', loc.postcode);
+  if (loc.suburb) query.set('suburb', loc.suburb);
+  if (loc.state) query.set('state', loc.state);
+  if (loc.wwStoreId) query.set('wwStoreId', loc.wwStoreId);
+  if (loc.wwStoreName) query.set('wwStoreName', loc.wwStoreName);
+  if (loc.igaStoreId) query.set('igaStoreId', loc.igaStoreId);
+  if (loc.igaStoreName) query.set('igaStoreName', loc.igaStoreName);
+  if (loc.aldiStoreId) query.set('aldiStoreId', loc.aldiStoreId);
+  if (loc.aldiStoreName) query.set('aldiStoreName', loc.aldiStoreName);
+}
+
 export interface FetchSpecialsParams {
   store?: StoreFilter;
   category?: string;
   dealFilter?: DealFilter;
   halfPrice?: boolean;
+  inStockOnly?: boolean;
   q?: string;
   live?: boolean;
   sort?: SortOption;
+  locationCtx?: LocationSearchContext;
 }
 
 export async function fetchSpecials(
   params: FetchSpecialsParams = {}
 ): Promise<SpecialsResponse> {
+  const savedLoc = await loadSavedUserLocation();
+  const locCtx = params.locationCtx || toLocationSearchContext(savedLoc);
   const tryServer = await shouldTryCompanionServerFirst();
 
   if (tryServer) {
@@ -165,9 +189,11 @@ export async function fetchSpecials(
         query.set('dealFilter', params.dealFilter);
       }
       if (params.halfPrice) query.set('halfPrice', 'true');
+      if (params.inStockOnly) query.set('inStockOnly', 'true');
       if (params.q?.trim()) query.set('q', params.q.trim());
       if (params.live) query.set('live', 'true');
       if (params.sort) query.set('sort', params.sort);
+      appendLocationParams(query, locCtx);
 
       const timeout = Platform.OS === 'web' ? 20000 : 2800;
       const res = await fetchWithTimeout(
@@ -201,7 +227,7 @@ export async function fetchSpecials(
   lastActiveSource = 'on-device';
 
   if (params.live && params.q?.trim()) {
-    const liveItems = await searchAllCompetitorsLive(params.q.trim());
+    const liveItems = await searchAllCompetitorsLive(params.q.trim(), locCtx);
     const statFor = (s: SpecialItem['store']) => {
       const arr = liveItems.filter((i) => i.store === s);
       return {
@@ -237,14 +263,17 @@ export async function fetchSpecials(
     }
   }
 
-  const fresh = await downloadAllSpecialsOnDevice();
+  const fresh = await downloadAllSpecialsOnDevice(locCtx);
   await saveCachedFeedToDevice(fresh);
   return fresh;
 }
 
 export async function compareCompetitorPrices(
-  item: SpecialItem
+  item: SpecialItem,
+  explicitLocCtx?: LocationSearchContext
 ): Promise<{ queryUsed: string; quotes: CompetitorQuote[] }> {
+  const savedLoc = await loadSavedUserLocation();
+  const locCtx = explicitLocCtx || toLocationSearchContext(savedLoc);
   const tryServer = await shouldTryCompanionServerFirst();
 
   if (tryServer) {
@@ -256,7 +285,7 @@ export async function compareCompetitorPrices(
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ item }),
+          body: JSON.stringify({ item, location: locCtx }),
         },
         timeout
       );
@@ -281,27 +310,34 @@ export async function compareCompetitorPrices(
   }
 
   lastActiveSource = 'on-device';
-  return compareItemAcrossCompetitorsOnDevice(item);
+  return compareItemAcrossCompetitorsOnDevice(item, locCtx);
 }
 
-export async function triggerWebSync(): Promise<SpecialsResponse> {
+export async function triggerWebSync(
+  explicitLocCtx?: LocationSearchContext
+): Promise<SpecialsResponse> {
+  const savedLoc = await loadSavedUserLocation();
+  const locCtx = explicitLocCtx || toLocationSearchContext(savedLoc);
   const tryServer = await shouldTryCompanionServerFirst();
 
   if (tryServer) {
     try {
       const baseUrl = await getApiBaseUrl();
-      const timeout = Platform.OS === 'web' ? 30000 : 3500;
+      const timeout = Platform.OS === 'web' ? 35000 : 4000;
       const refreshRes = await fetchWithTimeout(
         `${baseUrl}/api/refresh`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ location: locCtx }),
         },
         timeout
       );
       if (refreshRes.ok) {
+        const listQuery = new URLSearchParams();
+        appendLocationParams(listQuery, locCtx);
         const listRes = await fetchWithTimeout(
-          `${baseUrl}/api/specials`,
+          `${baseUrl}/api/specials?${listQuery.toString()}`,
           {},
           10000
         );
@@ -321,7 +357,7 @@ export async function triggerWebSync(): Promise<SpecialsResponse> {
 
   // Direct on-device web scrape & download
   lastActiveSource = 'on-device';
-  const fresh = await downloadAllSpecialsOnDevice();
+  const fresh = await downloadAllSpecialsOnDevice(locCtx);
   await saveCachedFeedToDevice(fresh);
   return fresh;
 }

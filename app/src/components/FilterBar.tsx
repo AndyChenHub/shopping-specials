@@ -27,9 +27,12 @@ interface FilterBarProps {
   onStoreChange: (store: StoreFilter) => void;
   dealFilter: DealFilter;
   onDealFilterChange: (filter: DealFilter) => void;
+  inStockOnly: boolean;
+  onToggleInStockOnly: () => void;
   totalItemsCount: number;
   totalOnSaleCount: number;
   totalHalfPriceCount: number;
+  inStockCount?: number;
   amazonCount?: number;
   selectedCategory: string;
   onCategoryChange: (cat: string) => void;
@@ -55,9 +58,12 @@ export const FilterBar: React.FC<FilterBarProps> = ({
   onStoreChange,
   dealFilter,
   onDealFilterChange,
+  inStockOnly,
+  onToggleInStockOnly,
   totalItemsCount,
   totalOnSaleCount,
   totalHalfPriceCount,
+  inStockCount = 0,
   amazonCount = 0,
   selectedCategory,
   onCategoryChange,
@@ -231,6 +237,29 @@ export const FilterBar: React.FC<FilterBarProps> = ({
           />
           <Text style={styles.halfPriceToggleText}>
             ½ Price{totalHalfPriceCount > 0 ? ` (${totalHalfPriceCount})` : ''}
+          </Text>
+        </Pressable>
+
+        {/* In Stock Only Toggle */}
+        <Pressable
+          onPress={onToggleInStockOnly}
+          style={[
+            styles.dealModeChip,
+            inStockOnly ? styles.inStockActive : styles.inStockInactive,
+          ]}
+        >
+          <Ionicons
+            name={inStockOnly ? 'checkmark-circle' : 'checkmark-circle-outline'}
+            size={14}
+            color={inStockOnly ? '#FFFFFF' : COLORS.savingsText}
+          />
+          <Text
+            style={[
+              styles.inStockText,
+              inStockOnly && styles.dealModeTextLight,
+            ]}
+          >
+            In Stock{inStockCount > 0 ? ` (${inStockCount})` : ''}
           </Text>
         </Pressable>
 
@@ -476,6 +505,19 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
     color: COLORS.halfPriceText,
+  },
+  inStockActive: {
+    backgroundColor: '#0F766E',
+    borderColor: '#0F766E',
+  },
+  inStockInactive: {
+    backgroundColor: '#F0FDFA',
+    borderColor: '#99F6E4',
+  },
+  inStockText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F766E',
   },
   divider: {
     width: 1,

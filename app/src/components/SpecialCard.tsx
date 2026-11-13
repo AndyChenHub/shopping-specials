@@ -105,6 +105,30 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
             {item.title}
           </Text>
 
+          {typeof item.inStock === 'boolean' && (
+            <View style={styles.stockRow}>
+              <View
+                style={[
+                  styles.stockDot,
+                  {
+                    backgroundColor: item.inStock
+                      ? COLORS.savingsText
+                      : COLORS.danger,
+                  },
+                ]}
+              />
+              <Text
+                numberOfLines={1}
+                style={[
+                  styles.stockText,
+                  item.inStock ? styles.stockTextIn : styles.stockTextOut,
+                ]}
+              >
+                {item.stockLabel || (item.inStock ? 'In Stock' : 'Out of Stock')}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.spacer} />
 
           {/* Price Block */}
@@ -261,6 +285,28 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     lineHeight: 18,
     minHeight: 36,
+  },
+  stockRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 5,
+  },
+  stockDot: {
+    width: 6.5,
+    height: 6.5,
+    borderRadius: 3.5,
+  },
+  stockText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stockTextIn: {
+    color: COLORS.savingsText,
+  },
+  stockTextOut: {
+    color: COLORS.danger,
   },
   spacer: {
     flex: 1,
