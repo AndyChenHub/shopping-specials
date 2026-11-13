@@ -1,6 +1,6 @@
 {
   "name": "shopping-specials",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Australian Supermarket Specials iOS App (Woolworths, Coles & ALDI) + Companion Web Scraper/Catalogue Backend",
   "scripts": {
