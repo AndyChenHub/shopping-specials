@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#FFFFFF" />
+  <title>snag — weekly specials</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="stage">
+    <div class="device" id="device">
+      <div class="statusbar"><span id="clock">9:41</span><span class="island"></span><span class="sb-icons"><i></i><i></i><i></i><b></b></span></div>
+
+      <main class="screen" id="screen-discover"></main>
+      <main class="screen hidden" id="screen-stores"></main>
+      <main class="screen hidden" id="screen-search"></main>
+      <main class="screen hidden" id="screen-list"></main>
+
+      <!-- pushed views -->
+      <section class="view" id="store-view"></section>
+
+      <button class="cartbar" id="cartbar"></button>
+      <nav class="tabbar" id="tabbar"></nav>
+
+      <div class="backdrop" id="backdrop"></div>
+      <div class="sheet" id="sheet"></div>
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+  <script>/* fit phone frame to window */(function(){const d=document.getElementById("device");const f=()=>{d.style.zoom=innerWidth<=500?"":Math.min(1,(innerHeight-56)/868).toFixed(3)};f();addEventListener("resize",f)})();</script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -15,6 +15,7 @@ Browse everyday supermarket items, filter by **On Sale** or **½ Price** deals, 
   - **Standalone On-Device Sync & Comparison (`.ipa` Ready)**: Downloads catalogues, everyday staples, and live competitor prices directly on your iPhone over 4G/5G or Wi-Fi—no PC server required once installed!
   - **Auto LAN Companion Mode**: Also supports connecting to `server/` when previewing in a desktop browser or running on local Wi-Fi.
 - **`server/`** — Optional Node.js + Express companion backend that fetches and caches items & weekly specials locally (`server/.cache/specials-cache.json`) and serves `/api/specials` + `/api/compare` for desktop/web previewing.
+- **`design/`** — Interactive HTML/CSS/JS UI design prototype and reference assets (`snag.` design system) integrated into `app/`.
 
 ---
 
