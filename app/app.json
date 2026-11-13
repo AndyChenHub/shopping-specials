@@ -2,14 +2,14 @@
   "expo": {
     "name": "Aussie Specials",
     "slug": "aussie-specials",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "au.com.shoppingspecials.app",
-      "buildNumber": "4",
+      "buildNumber": "5",
       "infoPlist": {
         "CFBundleDisplayName": "Aussie Specials",
         "RCTAsyncStorageExcludeFromBackup": false,
@@ -22,7 +22,7 @@
     },
     "android": {
       "package": "au.com.shoppingspecials.app",
-      "versionCode": 4,
+      "versionCode": 5,
       "allowBackup": true,
       "adaptiveIcon": {
         "backgroundColor": "#119F99",

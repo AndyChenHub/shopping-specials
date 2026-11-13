@@ -1,8 +1,8 @@
 {
-  "version": "1.0.1",
-  "buildNumber": "4",
-  "tagName": "v1.0.1",
-  "gitSha": "3e4f76a",
-  "builtAt": "2026-11-13T02:12:50.147Z",
+  "version": "1.0.2",
+  "buildNumber": "5",
+  "tagName": "v1.0.2",
+  "gitSha": "5bb93b0",
+  "builtAt": "2026-11-13T10:08:02.905Z",
   "repo": "AndyChenHub/shopping-specials"
 }
