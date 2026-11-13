@@ -28,7 +28,7 @@ The workflow in [`.github/workflows/build-ios-ipa.yml`](./.github/workflows/buil
 
 - **Automatic Semantic Version + Build Numbering**: Before compiling, [`app/scripts/prepare-release-version.mjs`](./app/scripts/prepare-release-version.mjs) inspects existing `v*` Git tags, auto-increments the patch & iOS `CFBundleVersion` build number, embeds the version metadata into [`app/src/versionInfo.json`](./app/src/versionInfo.json), and names the binary `AussieSpecials-vX.Y.Z-bN.ipa`.
 - **Automatic GitHub Releases**: Every build tags `vX.Y.Z` and publishes the versioned `.ipa`, its `.sha256` checksum, and auto-generated commit changelog to **GitHub Releases** (`https://github.com/AndyChenHub/shopping-specials/releases`).
-- **In-App Update Checker**: The installed `.ipa` displays its current version badge (`vX.Y.Z`) in the header and checks GitHub Releases automatically, alerting you with one-tap **Download `.ipa`** and **SideStore / AltStore** install buttons when a newer `.ipa` is published.
+- **In-App Update Checker & Seamless Settings Persistence**: Checks GitHub Releases automatically with one-tap **Download `.ipa`** and **SideStore / AltStore** install buttons. Installing a newer `.ipa` with the same Apple ID upgrades in-place (`au.com.shoppingspecials.app`) while preserving your saved local stores, favourites, filters, shopping list, and server settings (with `RCTAsyncStorageExcludeFromBackup: false` enabled for iOS/SideStore/AltStore backups, plus 1-tap **Export / Restore Backup** in Settings).
 - **Manual Major/Minor Version Bumps** (optional):
   ```powershell
   npm run version:minor   # e.g. 1.0.x -> 1.1.0

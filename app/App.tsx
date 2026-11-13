@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Platform,
   Pressable,
   StyleSheet,
@@ -28,11 +29,17 @@ import {
   triggerWebSync,
 } from './src/services/api';
 import {
+  isSpecialItemHalfPrice,
+  isSpecialItemOnSale,
+} from './src/services/normalizeClient';
+import {
   loadSavedUserLocation,
   saveUserLocation,
   toLocationSearchContext,
 } from './src/services/locationService';
 import {
+  AussieSpecialsBackupPayload,
+  DEFAULT_PREFS,
   loadShoppingList,
   loadUserPrefs,
   persistShoppingList,
@@ -77,13 +84,9 @@ function MainApp() {
   const [liveSearching, setLiveSearching] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Search Screen Filter State
+  // Search Screen Ephemeral Query & Category
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedStore, setSelectedStore] = useState<StoreFilter>('all');
-  const [dealFilter, setDealFilter] = useState<DealFilter>('all');
-  const [inStockOnly, setInStockOnly] = useState<boolean>(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
-  const [sortBy, setSortBy] = useState<SortOption>('featured');
 
   // User Location & Local Stores
   const [userLocation, setUserLocation] = useState<UserStoreLocation | null>(
@@ -92,13 +95,46 @@ function MainApp() {
   const [locationModalOpen, setLocationModalOpen] = useState<boolean>(false);
   const resumeDetailAfterLocationRef = useRef<SpecialItem | null>(null);
 
-  // Shopping List, Favourites & Recent Searches
+  // Shopping List, Favourites, Filters & Persisted Preferences
+  const [storageHydrated, setStorageHydrated] = useState<boolean>(false);
   const [listEntries, setListEntries] = useState<ShoppingListEntry[]>([]);
-  const [prefs, setPrefs] = useState<SnagUserPrefs>({
-    favStores: ['woolworths'],
-    favItemIds: [],
-    recentSearches: ['chips', 'avocado', 'coffee', 'milk', 'tim tam'],
-  });
+  const [prefs, setPrefs] = useState<SnagUserPrefs>(DEFAULT_PREFS);
+
+  const selectedStore = prefs.selectedStore;
+  const dealFilter = prefs.dealFilter;
+  const inStockOnly = prefs.inStockOnly;
+  const sortBy = prefs.sortBy;
+
+  const setSelectedStore = useCallback((nextStore: StoreFilter) => {
+    setPrefs((prev) => ({ ...prev, selectedStore: nextStore }));
+  }, []);
+
+  const setDealFilter = useCallback((nextDeal: DealFilter) => {
+    setPrefs((prev) => ({ ...prev, dealFilter: nextDeal }));
+  }, []);
+
+  const toggleSearchInStockOnly = useCallback(() => {
+    setPrefs((prev) => ({ ...prev, inStockOnly: !prev.inStockOnly }));
+  }, []);
+
+  const setSortBy = useCallback((nextSort: SortOption) => {
+    setPrefs((prev) => ({ ...prev, sortBy: nextSort }));
+  }, []);
+
+  const setBrowseDealFilter = useCallback((nextDeal: DealFilter) => {
+    setPrefs((prev) => ({ ...prev, browseDealFilter: nextDeal }));
+  }, []);
+
+  const toggleBrowseInStockOnly = useCallback(() => {
+    setPrefs((prev) => ({
+      ...prev,
+      browseInStockOnly: !prev.browseInStockOnly,
+    }));
+  }, []);
+
+  const setStoresTabFilter = useCallback((nextFilter: string) => {
+    setPrefs((prev) => ({ ...prev, storesTabFilter: nextFilter }));
+  }, []);
 
   // Modals
   const [detailItem, setDetailItem] = useState<SpecialItem | null>(null);
@@ -108,8 +144,6 @@ function MainApp() {
   const [releaseCheck, setReleaseCheck] =
     useState<IpaReleaseCheckResult | null>(null);
   const [checkingRelease, setCheckingRelease] = useState<boolean>(false);
-  const [updateBannerDismissed, setUpdateBannerDismissed] =
-    useState<boolean>(false);
 
   // Toast Banner Animation
   const [toastMsg, setToastMsg] = useState<string>('');
@@ -137,12 +171,34 @@ function MainApp() {
     [toastAnim]
   );
 
-  // Hydrate persistent list, preferences & saved postcode/stores
+  // Hydrate persistent list, preferences & saved postcode/stores before enabling writes
   useEffect(() => {
-    loadShoppingList().then(setListEntries);
-    loadUserPrefs().then(setPrefs);
-    loadSavedUserLocation().then(setUserLocation);
+    let mounted = true;
+    Promise.all([
+      loadShoppingList(),
+      loadUserPrefs(),
+      loadSavedUserLocation(),
+    ]).then(([savedList, savedPrefs, savedLoc]) => {
+      if (!mounted) return;
+      setListEntries(savedList);
+      setPrefs(savedPrefs);
+      setUserLocation(savedLoc);
+      setStorageHydrated(true);
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    persistUserPrefs(prefs);
+  }, [prefs, storageHydrated]);
+
+  useEffect(() => {
+    if (!storageHydrated) return;
+    persistShoppingList(listEntries);
+  }, [listEntries, storageHydrated]);
 
   const runReleaseCheck = useCallback(async () => {
     try {
@@ -275,9 +331,7 @@ function MainApp() {
             (r) => r.toLowerCase() !== trimmed.toLowerCase()
           ),
         ].slice(0, 6);
-        const next = { ...prev, recentSearches: nextRecent };
-        persistUserPrefs(next);
-        return next;
+        return { ...prev, recentSearches: nextRecent };
       });
     },
     [runLiveSearchForQuery]
@@ -361,18 +415,16 @@ function MainApp() {
   const handleSetQuantity = useCallback(
     (item: SpecialItem, qty: number) => {
       setListEntries((prev) => {
-        let next: ShoppingListEntry[];
         const idx = prev.findIndex((e) => e.item.id === item.id);
         if (qty <= 0) {
-          next = prev.filter((e) => e.item.id !== item.id);
-        } else if (idx >= 0) {
-          next = [...prev];
-          next[idx] = { ...next[idx], item, quantity: qty };
-        } else {
-          next = [{ item, quantity: qty, done: false }, ...prev];
+          return prev.filter((e) => e.item.id !== item.id);
         }
-        persistShoppingList(next);
-        return next;
+        if (idx >= 0) {
+          const next = [...prev];
+          next[idx] = { ...next[idx], item, quantity: qty };
+          return next;
+        }
+        return [{ item, quantity: qty, done: false }, ...prev];
       });
       showToast(
         qty > 0 ? `${item.title} · ${qty} on your list` : 'Removed from list'
@@ -384,15 +436,12 @@ function MainApp() {
   const handleIncrementItem = useCallback((item: SpecialItem) => {
     setListEntries((prev) => {
       const idx = prev.findIndex((e) => e.item.id === item.id);
-      let next: ShoppingListEntry[];
       if (idx >= 0) {
-        next = [...prev];
+        const next = [...prev];
         next[idx] = { ...next[idx], quantity: next[idx].quantity + 1 };
-      } else {
-        next = [{ item, quantity: 1, done: false }, ...prev];
+        return next;
       }
-      persistShoppingList(next);
-      return next;
+      return [{ item, quantity: 1, done: false }, ...prev];
     });
   }, []);
 
@@ -401,61 +450,48 @@ function MainApp() {
       const idx = prev.findIndex((e) => e.item.id === item.id);
       if (idx < 0) return prev;
       const current = prev[idx].quantity;
-      const next =
-        current <= 1
-          ? prev.filter((e) => e.item.id !== item.id)
-          : prev.map((e, i) =>
-              i === idx ? { ...e, quantity: e.quantity - 1 } : e
-            );
-      persistShoppingList(next);
-      return next;
+      return current <= 1
+        ? prev.filter((e) => e.item.id !== item.id)
+        : prev.map((e, i) =>
+            i === idx ? { ...e, quantity: e.quantity - 1 } : e
+          );
     });
   }, []);
 
   const handleToggleDone = useCallback((id: string) => {
-    setListEntries((prev) => {
-      const next = prev.map((e) =>
-        e.item.id === id ? { ...e, done: !e.done } : e
-      );
-      persistShoppingList(next);
-      return next;
-    });
+    setListEntries((prev) =>
+      prev.map((e) => (e.item.id === id ? { ...e, done: !e.done } : e))
+    );
   }, []);
 
   const handleClearTicked = useCallback(() => {
-    setListEntries((prev) => {
-      const next = prev.filter((e) => !e.done);
-      persistShoppingList(next);
-      return next;
-    });
+    setListEntries((prev) => prev.filter((e) => !e.done));
     showToast('Ticked items cleared');
   }, [showToast]);
 
   const handleClearAll = useCallback(() => {
     setListEntries([]);
-    persistShoppingList([]);
     showToast('Shopping list cleared');
   }, [showToast]);
 
   // Favourites Helpers
   const handleToggleFavStore = useCallback(
     (storeId: StoreId) => {
+      const currentlyFav = prefs.favStores.includes(storeId);
       setPrefs((prev) => {
         const exists = prev.favStores.includes(storeId);
         const favStores = exists
           ? prev.favStores.filter((s) => s !== storeId)
           : [...prev.favStores, storeId];
-        const next = { ...prev, favStores };
-        persistUserPrefs(next);
-        showToast(
-          exists
-            ? 'Removed from favourite stores'
-            : `${STORE_THEMES[storeId].name} saved to favourites`
-        );
-        return next;
+        return { ...prev, favStores };
       });
+      showToast(
+        currentlyFav
+          ? 'Removed from favourite stores'
+          : `${STORE_THEMES[storeId].name} saved to favourites`
+      );
     },
-    [showToast]
+    [prefs.favStores, showToast]
   );
 
   const handleToggleFavItem = useCallback((itemId: string) => {
@@ -464,22 +500,23 @@ function MainApp() {
       const favItemIds = exists
         ? prev.favItemIds.filter((id) => id !== itemId)
         : [...prev.favItemIds, itemId];
-      const next = { ...prev, favItemIds };
-      persistUserPrefs(next);
-      return next;
+      return { ...prev, favItemIds };
     });
   }, []);
 
-  // Search Pool & Filtering
-  const isItemOnSale = useCallback((item: SpecialItem): boolean => {
-    return Boolean(
-      item.isOnSale ??
-        (item.isHalfPrice ||
-          (item.saveAmount !== null && item.saveAmount > 0) ||
-          item.promoText)
-    );
-  }, []);
+  const handleBackupRestored = useCallback(
+    async (restored: AussieSpecialsBackupPayload) => {
+      await loadSavedUserLocation(true);
+      setPrefs(restored.prefs);
+      setListEntries(restored.shoppingList);
+      setUserLocation(restored.userLocation);
+      showToast('Preferences & shopping list restored');
+      loadCataloguesFromServer();
+    },
+    [loadCataloguesFromServer, showToast]
+  );
 
+  // Search Pool & Filtering
   const queryMatchedPool = useMemo(() => {
     const qNorm = searchQuery.trim().toLowerCase();
     if (!qNorm) return allItems;
@@ -519,25 +556,48 @@ function MainApp() {
         ? catPool
         : catPool.filter((i) => i.store === selectedStore);
 
+    const dealScoped = inStockOnly
+      ? storeScoped.filter((i) => i.inStock === true)
+      : storeScoped;
+
+    const stockScoped = storeScoped.filter((i) => {
+      if (dealFilter === 'half_price') return isSpecialItemHalfPrice(i);
+      if (dealFilter === 'sale') return isSpecialItemOnSale(i);
+      return true;
+    });
+
+    const aisleCounts: Record<string, number> = {};
+    for (const item of queryMatchedPool) {
+      if (selectedStore !== 'all' && item.store !== selectedStore) continue;
+      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) continue;
+      if (dealFilter === 'sale' && !isSpecialItemOnSale(item)) continue;
+      if (inStockOnly && item.inStock !== true) continue;
+      aisleCounts[item.category] = (aisleCounts[item.category] || 0) + 1;
+    }
+
     return {
-      totalItemsCount: storeScoped.length,
-      totalOnSaleCount: storeScoped.filter(isItemOnSale).length,
-      totalHalfPriceCount: storeScoped.filter((i) => i.isHalfPrice).length,
-      inStockCount: storeScoped.filter((i) => i.inStock === true).length,
+      totalItemsCount: dealScoped.length,
+      totalOnSaleCount: dealScoped.filter(isSpecialItemOnSale).length,
+      totalHalfPriceCount: dealScoped.filter(isSpecialItemHalfPrice).length,
+      inStockCount: stockScoped.filter((i) => i.inStock === true).length,
       amazonCount,
+      aisleCounts,
     };
   }, [
     queryMatchedPool,
     selectedCategory,
     selectedStore,
-    isItemOnSale,
+    dealFilter,
+    inStockOnly,
   ]);
 
   const filteredSearchItems = useMemo(() => {
     const matches = queryMatchedPool.filter((item) => {
       if (selectedStore !== 'all' && item.store !== selectedStore) return false;
-      if (dealFilter === 'half_price' && !item.isHalfPrice) return false;
-      if (dealFilter === 'sale' && !isItemOnSale(item)) return false;
+      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) {
+        return false;
+      }
+      if (dealFilter === 'sale' && !isSpecialItemOnSale(item)) return false;
       if (inStockOnly && item.inStock !== true) return false;
       if (selectedCategory !== 'All' && item.category !== selectedCategory) {
         return false;
@@ -547,12 +607,21 @@ function MainApp() {
 
     if (sortBy === 'featured') return matches;
 
+    const getDiscountPct = (it: SpecialItem) =>
+      it.discountPercent ??
+      (it.wasPrice && it.wasPrice > it.price
+        ? Math.round(((it.wasPrice - it.price) / it.wasPrice) * 100)
+        : 0);
+    const getSaveAmt = (it: SpecialItem) =>
+      it.saveAmount ??
+      (it.wasPrice && it.wasPrice > it.price ? it.wasPrice - it.price : 0);
+
     return [...matches].sort((a, b) => {
       if (sortBy === 'discount') {
-        return (b.discountPercent || 0) - (a.discountPercent || 0);
+        return getDiscountPct(b) - getDiscountPct(a);
       }
       if (sortBy === 'savings') {
-        return (b.saveAmount || 0) - (a.saveAmount || 0);
+        return getSaveAmt(b) - getSaveAmt(a);
       }
       if (sortBy === 'price_asc') {
         return (a.price ?? 9999) - (b.price ?? 9999);
@@ -566,7 +635,6 @@ function MainApp() {
     inStockOnly,
     selectedCategory,
     sortBy,
-    isItemOnSale,
   ]);
 
   const pushedStoreItems = useMemo(() => {
@@ -610,30 +678,36 @@ function MainApp() {
       </Animated.View>
 
       {/* IPA Release Update Banner */}
-      {releaseCheck?.hasUpdate && !updateBannerDismissed && (
-        <View style={styles.updateBanner}>
-          <View style={styles.updateBannerLeft}>
-            <Ionicons name="sparkles" size={15} color={COLORS.blue} />
-            <Text style={styles.updateBannerText} numberOfLines={1}>
-              New iOS .ipa {releaseCheck.latestTag} available
-            </Text>
+      {releaseCheck?.hasUpdate &&
+        releaseCheck.latestTag !== prefs.dismissedUpdateTag && (
+          <View style={styles.updateBanner}>
+            <View style={styles.updateBannerLeft}>
+              <Ionicons name="sparkles" size={15} color={COLORS.blue} />
+              <Text style={styles.updateBannerText} numberOfLines={1}>
+                New iOS .ipa {releaseCheck.latestTag} available
+              </Text>
+            </View>
+            <View style={styles.updateBannerActions}>
+              <Pressable
+                onPress={() => setSettingsOpen(true)}
+                style={styles.updateBannerBtn}
+              >
+                <Text style={styles.updateBannerBtnText}>Update</Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setPrefs((prev) => ({
+                    ...prev,
+                    dismissedUpdateTag: releaseCheck.latestTag,
+                  }))
+                }
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={18} color={COLORS.muted} />
+              </Pressable>
+            </View>
           </View>
-          <View style={styles.updateBannerActions}>
-            <Pressable
-              onPress={() => setSettingsOpen(true)}
-              style={styles.updateBannerBtn}
-            >
-              <Text style={styles.updateBannerBtnText}>Update</Text>
-            </Pressable>
-            <Pressable
-              onPress={() => setUpdateBannerDismissed(true)}
-              hitSlop={8}
-            >
-              <Ionicons name="close" size={18} color={COLORS.muted} />
-            </Pressable>
-          </View>
-        </View>
-      )}
+        )}
 
       {/* Connection Error Banner */}
       {errorMsg && (
@@ -654,8 +728,13 @@ function MainApp() {
       <View style={styles.screenArea}>
         {initialLoading ? (
           <View style={styles.loadingState}>
+            <Image
+              source={require('./assets/icon.png')}
+              style={styles.loadingAppIcon}
+              resizeMode="cover"
+            />
             <Text style={styles.loadingWordmark}>
-              snag<Text style={{ color: COLORS.yellow }}>.</Text>
+              Aussie Specials<Text style={{ color: COLORS.yellow }}>.</Text>
             </Text>
             <ActivityIndicator
               size="large"
@@ -680,6 +759,10 @@ function MainApp() {
                 lastSyncedAt={lastSyncedAt}
                 refreshing={refreshing}
                 hasAppUpdate={Boolean(releaseCheck?.hasUpdate)}
+                browseDealFilter={prefs.browseDealFilter}
+                onChangeBrowseDealFilter={setBrowseDealFilter}
+                browseInStockOnly={prefs.browseInStockOnly}
+                onToggleBrowseInStockOnly={toggleBrowseInStockOnly}
                 onRefresh={handleSyncFromWeb}
                 onOpenLocation={() => setLocationModalOpen(true)}
                 onOpenSettings={() => setSettingsOpen(true)}
@@ -696,6 +779,8 @@ function MainApp() {
                 allItems={allItems}
                 favStores={prefs.favStores}
                 userLocation={userLocation}
+                selectedFilter={prefs.storesTabFilter}
+                onSelectFilter={setStoresTabFilter}
                 onOpenStore={(sid) => setPushedStoreId(sid)}
                 onOpenLocation={() => setLocationModalOpen(true)}
               />
@@ -719,7 +804,7 @@ function MainApp() {
                 dealFilter={dealFilter}
                 onDealFilterChange={setDealFilter}
                 inStockOnly={inStockOnly}
-                onToggleInStockOnly={() => setInStockOnly((v) => !v)}
+                onToggleInStockOnly={toggleSearchInStockOnly}
                 selectedCategory={selectedCategory}
                 onCategoryChange={setSelectedCategory}
                 sortBy={sortBy}
@@ -951,6 +1036,7 @@ function MainApp() {
         onCheckRelease={runReleaseCheck}
         onClose={() => setSettingsOpen(false)}
         onSaved={loadCataloguesFromServer}
+        onBackupRestored={handleBackupRestored}
       />
     </SafeAreaView>
   );
@@ -1065,11 +1151,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 32,
   },
+  loadingAppIcon: {
+    width: 78,
+    height: 78,
+    borderRadius: 20,
+    marginBottom: 12,
+  },
   loadingWordmark: {
-    fontSize: 38,
+    fontSize: 30,
     fontWeight: '900',
     color: COLORS.blue,
-    letterSpacing: -1.8,
+    letterSpacing: -1.1,
   },
   loadingTitle: {
     fontSize: 17,

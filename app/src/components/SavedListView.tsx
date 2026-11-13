@@ -90,7 +90,7 @@ export const SavedListView: React.FC<SavedListViewProps> = ({
       ).toFixed(2)}`;
     });
     const text = [
-      'My snag shopping list:',
+      'My Aussie Specials shopping list:',
       ...lines,
       `Est. total: $${summary.totalCost.toFixed(2)} (Saving $${summary.totalSaved.toFixed(2)})`,
     ].join('\n');

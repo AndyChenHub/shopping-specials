@@ -209,6 +209,16 @@ export async function searchWoolworthsProducts(
             query
           )}`;
 
+      const wwCatHint = [
+        p.Department,
+        p.AdditionalAttributes?.piesdepartmentnamesjson,
+        p.AdditionalAttributes?.piescategorynamesjson,
+        p.AdditionalAttributes?.sapcategoryname,
+        p.AdditionalAttributes?.sapsubcategoryname,
+      ]
+        .filter(Boolean)
+        .join(' ');
+
       out.push({
         id: `woolworths-sku-${p.Stockcode || title}`,
         store: 'woolworths',
@@ -227,7 +237,7 @@ export async function searchWoolworthsProducts(
         isHalfPrice,
         promoText,
         unitPrice: p.CupString ? decodeHtmlEntities(p.CupString) : null,
-        category: classifyCategory('', title, 'woolworths'),
+        category: classifyCategory(wwCatHint, title, 'woolworths'),
         imageUrl: p.LargeImageFile || p.MediumImageFile || null,
         productUrl,
         catalogueName: isOnSale ? 'Woolworths Specials' : 'Woolworths Everyday Range',
@@ -330,7 +340,14 @@ export async function searchColesProducts(
       ? `https://www.coles.com.au/product/${slug}-${r.id}`
       : searchUrl;
 
-    const catHint = r.merchandiseHeir?.category || r.merchandiseHeir?.subCategory || '';
+    const catHint = [
+      r.merchandiseHeir?.categoryGroup,
+      r.merchandiseHeir?.aisle,
+      r.merchandiseHeir?.category,
+      r.merchandiseHeir?.subCategory,
+    ]
+      .filter(Boolean)
+      .join(' ');
 
     const inStock =
       typeof r.availability === 'boolean'
@@ -588,8 +605,12 @@ export async function searchIgaProducts(
       promoText = `Save $${savings.saveAmount.toFixed(2)}`;
     }
 
-    const catHint =
-      item.defaultCategory?.[0]?.categoryBreadcrumb || '';
+    const catHint = Array.isArray(item.defaultCategory)
+      ? item.defaultCategory
+          .map((c: { categoryBreadcrumb?: string }) => c?.categoryBreadcrumb || '')
+          .filter(Boolean)
+          .join(' ')
+      : '';
 
     const inStock = item.available !== false;
     const stockLabel = inStock

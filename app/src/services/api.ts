@@ -11,6 +11,7 @@ import {
   StoreFilter,
 } from '../types/specials';
 import { downloadAllSpecialsOnDevice } from './directFetcher';
+import { reclassifySpecialItems } from './normalizeClient';
 import {
   compareItemAcrossCompetitorsOnDevice,
   searchAllCompetitorsLive,
@@ -19,9 +20,12 @@ import {
   loadSavedUserLocation,
   toLocationSearchContext,
 } from './locationService';
+import { syncUnifiedBackupSnapshot } from './savedStorage';
 
 const CUSTOM_API_URL_KEY = '@aussie_specials_custom_api_url';
-const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v3';
+const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v4';
+const LEGACY_CACHED_FEED_KEY = '@aussie_specials_feed_cache_v3';
+const UNIFIED_BACKUP_KEY = '@aussie_specials_backup_snapshot_v1';
 const DEFAULT_BACKEND_PORT = 3001;
 
 export type DataSourceMode = 'on-device' | 'companion-server';
@@ -70,11 +74,27 @@ export function getAutoDetectedBaseUrl(): string {
 
 let cachedCustomUrl: string | null | undefined = undefined;
 
-export async function getCustomApiBaseUrlRaw(): Promise<string> {
-  if (cachedCustomUrl === undefined) {
+export async function getCustomApiBaseUrlRaw(
+  forceReload = false
+): Promise<string> {
+  if (forceReload || cachedCustomUrl === undefined) {
     try {
       const saved = await AsyncStorage.getItem(CUSTOM_API_URL_KEY);
-      cachedCustomUrl = saved ? saved.trim().replace(/\/+$/, '') : null;
+      if (saved && saved.trim()) {
+        cachedCustomUrl = saved.trim().replace(/\/+$/, '');
+      } else {
+        const backupRaw = await AsyncStorage.getItem(UNIFIED_BACKUP_KEY);
+        const backupUrl = backupRaw
+          ? (JSON.parse(backupRaw) as { customApiUrl?: string | null })
+              ?.customApiUrl
+          : null;
+        if (backupUrl && backupUrl.trim()) {
+          cachedCustomUrl = backupUrl.trim().replace(/\/+$/, '');
+          await AsyncStorage.setItem(CUSTOM_API_URL_KEY, cachedCustomUrl);
+        } else {
+          cachedCustomUrl = null;
+        }
+      }
     } catch {
       cachedCustomUrl = null;
     }
@@ -92,9 +112,11 @@ export async function setCustomApiBaseUrl(url: string | null): Promise<string> {
   if (cleaned) {
     cachedCustomUrl = cleaned;
     await AsyncStorage.setItem(CUSTOM_API_URL_KEY, cleaned);
+    await syncUnifiedBackupSnapshot({ customApiUrl: cleaned });
   } else {
     cachedCustomUrl = null;
     await AsyncStorage.removeItem(CUSTOM_API_URL_KEY);
+    await syncUnifiedBackupSnapshot({ customApiUrl: null });
   }
   return getApiBaseUrl();
 }
@@ -102,10 +124,29 @@ export async function setCustomApiBaseUrl(url: string | null): Promise<string> {
 export async function loadCachedFeedFromDevice(): Promise<SpecialsResponse | null> {
   try {
     const raw = await AsyncStorage.getItem(CACHED_FEED_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SpecialsResponse;
-    if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
-      return parsed;
+    if (raw) {
+      const parsed = JSON.parse(raw) as SpecialsResponse;
+      if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+        return {
+          ...parsed,
+          items: reclassifySpecialItems(parsed.items),
+        };
+      }
+    }
+
+    // Migrate & repair categories from v3 feed cache if present
+    const legacyRaw = await AsyncStorage.getItem(LEGACY_CACHED_FEED_KEY);
+    if (legacyRaw) {
+      const parsed = JSON.parse(legacyRaw) as SpecialsResponse;
+      if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+        const migrated: SpecialsResponse = {
+          ...parsed,
+          items: reclassifySpecialItems(parsed.items),
+        };
+        await AsyncStorage.setItem(CACHED_FEED_KEY, JSON.stringify(migrated));
+        await AsyncStorage.removeItem(LEGACY_CACHED_FEED_KEY);
+        return migrated;
+      }
     }
   } catch {
     // ignore corrupt cache
@@ -202,12 +243,18 @@ export async function fetchSpecials(
         timeout
       );
       if (res.ok) {
-        const json: SpecialsResponse = await res.json();
+        const rawJson: SpecialsResponse = await res.json();
+        const json: SpecialsResponse = {
+          ...rawJson,
+          items: reclassifySpecialItems(rawJson.items || []),
+        };
         lastActiveSource = 'companion-server';
         if (
           !params.q &&
           (!params.store || params.store === 'all') &&
-          (!params.dealFilter || params.dealFilter === 'all')
+          (!params.category || params.category === 'All') &&
+          (!params.dealFilter || params.dealFilter === 'all') &&
+          !params.inStockOnly
         ) {
           saveCachedFeedToDevice(json);
         }
@@ -342,7 +389,11 @@ export async function triggerWebSync(
           10000
         );
         if (listRes.ok) {
-          const json: SpecialsResponse = await listRes.json();
+          const rawJson: SpecialsResponse = await listRes.json();
+          const json: SpecialsResponse = {
+            ...rawJson,
+            items: reclassifySpecialItems(rawJson.items || []),
+          };
           lastActiveSource = 'companion-server';
           await saveCachedFeedToDevice(json);
           return json;

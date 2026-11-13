@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -20,6 +21,11 @@ import {
   setCustomApiBaseUrl,
 } from '../services/api';
 import {
+  AussieSpecialsBackupPayload,
+  exportAllUserSettingsJson,
+  importAllUserSettingsJson,
+} from '../services/savedStorage';
+import {
   APP_VERSION_INFO,
   IpaReleaseCheckResult,
 } from '../services/versionChecker';
@@ -31,6 +37,7 @@ interface ServerSettingsModalProps {
   onCheckRelease: () => void;
   onClose: () => void;
   onSaved: () => void;
+  onBackupRestored?: (restored: AussieSpecialsBackupPayload) => void;
 }
 
 export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
@@ -40,16 +47,70 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   onCheckRelease,
   onClose,
   onSaved,
+  onBackupRestored,
 }) => {
   const [customUrl, setCustomUrl] = useState('');
+  const [showRestoreBox, setShowRestoreBox] = useState(false);
+  const [restoreJson, setRestoreJson] = useState('');
+  const [backupNotice, setBackupNotice] = useState<string | null>(null);
+  const [backupError, setBackupError] = useState<string | null>(null);
   const autoUrl = getAutoDetectedBaseUrl();
   const activeMode = getLastActiveDataSource();
 
   useEffect(() => {
     if (visible) {
       getCustomApiBaseUrlRaw().then(setCustomUrl);
+      setBackupNotice(null);
+      setBackupError(null);
+      setShowRestoreBox(false);
     }
   }, [visible]);
+
+  const handleExportBackup = async () => {
+    try {
+      setBackupError(null);
+      const json = await exportAllUserSettingsJson();
+      if (
+        Platform.OS === 'web' &&
+        typeof navigator !== 'undefined' &&
+        navigator.clipboard
+      ) {
+        await navigator.clipboard.writeText(json);
+        setBackupNotice('Settings backup copied to clipboard.');
+        return;
+      }
+      await Share.share({
+        title: 'Aussie Specials Preferences Backup',
+        message: json,
+      });
+      setBackupNotice('Backup ready to save or share.');
+    } catch (err) {
+      setBackupError(
+        err instanceof Error ? err.message : 'Could not export backup'
+      );
+    }
+  };
+
+  const handleImportBackup = async () => {
+    if (!restoreJson.trim()) {
+      setBackupError('Paste exported backup JSON above first.');
+      return;
+    }
+    try {
+      setBackupError(null);
+      const restored = await importAllUserSettingsJson(restoreJson);
+      await getCustomApiBaseUrlRaw(true);
+      setCustomUrl(restored.customApiUrl || '');
+      onBackupRestored?.(restored);
+      setRestoreJson('');
+      setShowRestoreBox(false);
+      setBackupNotice('Preferences, local stores & shopping list restored!');
+    } catch (err) {
+      setBackupError(
+        err instanceof Error ? err.message : 'Invalid backup JSON'
+      );
+    }
+  };
 
   const handleSave = async () => {
     await setCustomApiBaseUrl(customUrl);
@@ -210,6 +271,86 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
                   color={COLORS.textMuted}
                 />
               </Pressable>
+            </View>
+
+            {/* Preferences & Update Persistence Card */}
+            <View style={styles.versionCard}>
+              <View style={styles.persistHeaderRow}>
+                <Ionicons
+                  name="shield-checkmark"
+                  size={17}
+                  color={COLORS.savingsText}
+                />
+                <Text style={styles.statusTitle}>
+                  Preferences Preserved Across Updates
+                </Text>
+              </View>
+              <Text style={styles.statusSub}>
+                Installing a newer .ipa over Aussie Specials keeps your saved
+                local stores, favourites, filters, and shopping list intact. You
+                can also export or restore a backup anytime:
+              </Text>
+
+              <View style={styles.backupActionsRow}>
+                <Pressable
+                  onPress={handleExportBackup}
+                  style={styles.backupBtn}
+                >
+                  <Ionicons
+                    name="share-outline"
+                    size={15}
+                    color={COLORS.accent}
+                  />
+                  <Text style={styles.backupBtnText}>Export Backup</Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    setShowRestoreBox((v) => !v);
+                    setBackupError(null);
+                  }}
+                  style={styles.backupBtnSecondary}
+                >
+                  <Ionicons
+                    name="cloud-upload-outline"
+                    size={15}
+                    color={COLORS.textPrimary}
+                  />
+                  <Text style={styles.backupBtnSecondaryText}>
+                    {showRestoreBox ? 'Cancel' : 'Restore Backup'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              {showRestoreBox && (
+                <View style={styles.restoreWrap}>
+                  <TextInput
+                    value={restoreJson}
+                    onChangeText={setRestoreJson}
+                    placeholder="Paste exported Aussie Specials backup JSON…"
+                    placeholderTextColor={COLORS.textMuted}
+                    multiline
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.restoreInput}
+                  />
+                  <Pressable
+                    onPress={handleImportBackup}
+                    style={styles.saveBtn}
+                  >
+                    <Text style={[styles.saveText, { textAlign: 'center' }]}>
+                      Apply Restored Settings
+                    </Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {backupNotice && (
+                <Text style={styles.backupSuccessText}>{backupNotice}</Text>
+              )}
+              {backupError && (
+                <Text style={styles.backupErrorText}>{backupError}</Text>
+              )}
             </View>
 
             {/* Data Source Status */}
@@ -519,5 +660,73 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontWeight: '800',
     fontSize: 13.5,
+  },
+  persistHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  backupActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 2,
+  },
+  backupBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 9,
+    backgroundColor: COLORS.accentSoft,
+  },
+  backupBtnText: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: COLORS.accent,
+  },
+  backupBtnSecondary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 9,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  backupBtnSecondaryText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.textPrimary,
+  },
+  restoreWrap: {
+    gap: 8,
+    marginTop: 4,
+  },
+  restoreInput: {
+    minHeight: 78,
+    maxHeight: 130,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 12,
+    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surface,
+    textAlignVertical: 'top',
+  },
+  backupSuccessText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.savingsText,
+  },
+  backupErrorText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.danger,
   },
 });

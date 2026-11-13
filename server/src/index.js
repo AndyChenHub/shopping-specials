@@ -2,7 +2,11 @@ import express from 'express';
 import cors from 'cors';
 import os from 'node:os';
 import { CATEGORIES } from './normalize.js';
-import { loadCacheFromDisk, getStoreState } from './cache.js';
+import {
+  CACHE_SCHEMA_VERSION,
+  loadCacheFromDisk,
+  getStoreState,
+} from './cache.js';
 import {
   syncAllSupermarkets,
   searchSpecialsLive,
@@ -149,14 +153,26 @@ app.get('/api/specials', async (req, res) => {
     }
 
     // Deal / sale filter ('all' | 'sale' | 'half_price')
+    const isItemHalfPrice = (item) =>
+      Boolean(
+        item.isHalfPrice ||
+          (item.discountPercent && item.discountPercent >= 48) ||
+          (item.wasPrice &&
+            item.wasPrice > item.price &&
+            (item.wasPrice - item.price) / item.wasPrice >= 0.48)
+      );
+
     const isItemOnSale = (item) =>
       Boolean(
         item.isOnSale ??
-          (item.isHalfPrice || (item.saveAmount && item.saveAmount > 0) || item.promoText)
+          (isItemHalfPrice(item) ||
+            (item.saveAmount && item.saveAmount > 0) ||
+            (item.wasPrice && item.wasPrice > item.price) ||
+            item.promoText)
       );
 
     if (dealFilter === 'half_price' || halfPrice === 'true' || halfPrice === '1') {
-      pool = pool.filter((item) => item.isHalfPrice);
+      pool = pool.filter((item) => isItemHalfPrice(item));
     } else if (dealFilter === 'sale' || onSale === 'true' || onSale === '1') {
       pool = pool.filter((item) => isItemOnSale(item));
     }
@@ -173,11 +189,20 @@ app.get('/api/specials', async (req, res) => {
     }
 
     // Sorting
+    const getDiscountPct = (it) =>
+      it.discountPercent ??
+      (it.wasPrice && it.wasPrice > it.price
+        ? Math.round(((it.wasPrice - it.price) / it.wasPrice) * 100)
+        : 0);
+    const getSaveAmt = (it) =>
+      it.saveAmount ??
+      (it.wasPrice && it.wasPrice > it.price ? it.wasPrice - it.price : 0);
+
     const items = [...pool];
     if (sort === 'discount') {
-      items.sort((a, b) => (b.discountPercent || 0) - (a.discountPercent || 0));
+      items.sort((a, b) => getDiscountPct(b) - getDiscountPct(a));
     } else if (sort === 'savings') {
-      items.sort((a, b) => (b.saveAmount || 0) - (a.saveAmount || 0));
+      items.sort((a, b) => getSaveAmt(b) - getSaveAmt(a));
     } else if (sort === 'price_asc') {
       items.sort((a, b) => (a.price ?? 9999) - (b.price ?? 9999));
     }
@@ -306,7 +331,9 @@ async function bootstrap() {
     : Infinity;
   const schemaOutdated =
     current.items.length > 0 &&
-    (typeof current.items[0].isOnSale !== 'boolean' || !current.storeStats?.iga);
+    (current.schemaVersion !== CACHE_SCHEMA_VERSION ||
+      typeof current.items[0].isOnSale !== 'boolean' ||
+      !current.storeStats?.iga);
 
   if (current.items.length === 0 || schemaOutdated || ageMs > 6 * 60 * 60 * 1000) {
     console.log(

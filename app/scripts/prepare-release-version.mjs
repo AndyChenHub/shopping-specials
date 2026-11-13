@@ -75,6 +75,10 @@ appJson.expo.ios = {
   ...(appJson.expo.ios || {}),
   buildNumber: buildNumberStr,
 };
+appJson.expo.android = {
+  ...(appJson.expo.android || {}),
+  versionCode: nextBuild,
+};
 appPkg.version = nextVersion;
 rootPkg.version = nextVersion;
 

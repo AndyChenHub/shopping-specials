@@ -10,6 +10,7 @@ import {
   classifyCategory,
   computeSavings,
   decodeHtmlEntities,
+  extractSaleFinderUrlHint,
 } from './normalizeClient';
 import {
   searchColesProducts,
@@ -66,11 +67,7 @@ function extractPackageSize(title: string): string | null {
 }
 
 function extractUrlCategoryHint(href = ''): string {
-  const parts = href.split('/').filter(Boolean);
-  if (parts.length >= 4) {
-    return parts.slice(1, -2).join(' ').replace(/-/g, ' ');
-  }
-  return '';
+  return extractSaleFinderUrlHint(href);
 }
 
 interface DiscoveredCatalogue extends CatalogueInfo {

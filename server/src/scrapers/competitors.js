@@ -143,6 +143,16 @@ export async function searchWoolworthsProducts(query, limit = 16, locationCtx = 
         ? `Out of Stock • ${localStoreName}`
         : 'Out of Stock';
 
+      const wwCatHint = [
+        p.Department,
+        p.AdditionalAttributes?.piesdepartmentnamesjson,
+        p.AdditionalAttributes?.piescategorynamesjson,
+        p.AdditionalAttributes?.sapcategoryname,
+        p.AdditionalAttributes?.sapsubcategoryname,
+      ]
+        .filter(Boolean)
+        .join(' ');
+
       out.push({
         id: `woolworths-sku-${p.Stockcode || title}`,
         store: 'woolworths',
@@ -161,7 +171,7 @@ export async function searchWoolworthsProducts(query, limit = 16, locationCtx = 
         isHalfPrice,
         promoText,
         unitPrice: p.CupString ? cleanText(p.CupString) : null,
-        category: classifyCategory('', title, 'woolworths'),
+        category: classifyCategory(wwCatHint, title, 'woolworths'),
         imageUrl: p.LargeImageFile || p.MediumImageFile || null,
         productUrl: p.Stockcode
           ? `https://www.woolworths.com.au/shop/productdetails/${p.Stockcode}/${p.UrlFriendlyName || ''}`
@@ -254,6 +264,15 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
         : 'In Stock'
       : 'Out of Stock';
 
+    const colesCatHint = [
+      r.merchandiseHeir?.categoryGroup,
+      r.merchandiseHeir?.aisle,
+      r.merchandiseHeir?.category,
+      r.merchandiseHeir?.subCategory,
+    ]
+      .filter(Boolean)
+      .join(' ');
+
     out.push({
       id: `coles-sku-${r.id || slug}`,
       store: 'coles',
@@ -271,7 +290,7 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: r.pricing.comparable ? cleanText(r.pricing.comparable) : null,
-      category: classifyCategory(r.merchandiseHeir?.category || '', fullTitle, 'coles'),
+      category: classifyCategory(colesCatHint, fullTitle, 'coles'),
       imageUrl: imgUri ? `https://productimages.coles.com.au/productimages${imgUri}` : null,
       productUrl: r.id ? `https://www.coles.com.au/product/${slug}-${r.id}` : searchUrl,
       catalogueName: isOnSale ? 'Coles Specials' : 'Coles Everyday Range',
@@ -457,6 +476,13 @@ export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
       ? `Out of Stock • ${localStoreName}`
       : 'Out of Stock';
 
+    const igaCatHint = Array.isArray(item.defaultCategory)
+      ? item.defaultCategory
+          .map((c) => c?.categoryBreadcrumb || '')
+          .filter(Boolean)
+          .join(' ')
+      : '';
+
     out.push({
       id: `iga-${activeStoreId}-${item.productId || item.sku || fullTitle}`,
       store: 'iga',
@@ -474,7 +500,7 @@ export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: item.pricePerUnit ? cleanText(item.pricePerUnit) : null,
-      category: classifyCategory(item.defaultCategory?.[0]?.categoryBreadcrumb || '', fullTitle, 'iga'),
+      category: classifyCategory(igaCatHint, fullTitle, 'iga'),
       imageUrl: item.image?.default || item.image?.cell || null,
       productUrl: `https://www.igashop.com.au/search?q=${encodeURIComponent(fullTitle)}`,
       catalogueName: localStoreName || (isOnSale ? 'IGA Specials' : 'IGA Everyday Range'),

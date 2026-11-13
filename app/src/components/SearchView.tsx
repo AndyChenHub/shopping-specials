@@ -15,6 +15,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, STORE_THEMES } from '../theme/colors';
 import { DISCOVER_CATEGORIES } from '../theme/uiAssets';
 import {
+  isSpecialItemHalfPrice,
+  isSpecialItemOnSale,
+} from '../services/normalizeClient';
+import {
   DealFilter,
   SortOption,
   SpecialItem,
@@ -49,6 +53,7 @@ interface SearchViewProps {
     totalHalfPriceCount: number;
     inStockCount: number;
     amazonCount: number;
+    aisleCounts?: Record<string, number>;
   };
   onSelectProduct: (item: SpecialItem) => void;
   onIncrementItem: (item: SpecialItem) => void;
@@ -102,20 +107,39 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const hasActiveSearchOrCat =
     searchQuery.trim().length > 0 || selectedCategory !== 'All';
 
+  const hasPersistedSubFilters =
+    selectedStore !== 'all' || dealFilter !== 'all' || inStockOnly;
+
   const trendingItems = useMemo(() => {
     return [...allItems]
-      .filter((i) => i.isOnSale || i.isHalfPrice)
+      .filter((i) => isSpecialItemOnSale(i))
       .sort((a, b) => (b.saveAmount || 0) - (a.saveAmount || 0))
       .slice(0, 5);
   }, [allItems]);
 
   const catCounts = useMemo(() => {
+    if (counts.aisleCounts) return counts.aisleCounts;
     const map: Record<string, number> = {};
     for (const i of allItems) {
+      if (selectedStore !== 'all' && i.store !== selectedStore) continue;
+      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(i)) continue;
+      if (dealFilter === 'sale' && !isSpecialItemOnSale(i)) continue;
+      if (inStockOnly && i.inStock !== true) continue;
       map[i.category] = (map[i.category] || 0) + 1;
     }
     return map;
-  }, [allItems]);
+  }, [allItems, counts.aisleCounts, selectedStore, dealFilter, inStockOnly]);
+
+  const aisleChipOptions = useMemo(() => {
+    const baseIds = DISCOVER_CATEGORIES.map((c) => c.id);
+    if (
+      (counts.aisleCounts?.['Other'] || 0) > 0 ||
+      selectedCategory === 'Other'
+    ) {
+      baseIds.push('Other');
+    }
+    return ['All', ...baseIds];
+  }, [counts.aisleCounts, selectedCategory]);
 
   const categoryPairs = useMemo(() => {
     const pairs: Array<typeof DISCOVER_CATEGORIES> = [];
@@ -220,7 +244,23 @@ export const SearchView: React.FC<SearchViewProps> = ({
 
           {/* Colorful Browse Category Tiles */}
           <View style={styles.sec}>
-            <Text style={styles.secHeading}>Browse categories</Text>
+            <View style={styles.secHeaderRow}>
+              <Text style={[styles.secHeading, { marginBottom: 0 }]}>
+                Browse categories
+              </Text>
+              {hasPersistedSubFilters && (
+                <Pressable
+                  onPress={() => {
+                    onStoreChange('all');
+                    onDealFilterChange('all');
+                    if (inStockOnly) onToggleInStockOnly();
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={styles.clearCatText}>Reset active filters</Text>
+                </Pressable>
+              )}
+            </View>
             <View style={styles.tilesGrid}>
               {categoryPairs.map((pair, pIdx) => (
                 <View key={`pair-${pIdx}`} style={styles.tileRow}>
@@ -277,6 +317,53 @@ export const SearchView: React.FC<SearchViewProps> = ({
                   </Pressable>
                 </View>
               )}
+
+              {/* Aisle Quick-Switch Chips */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.chipsScroll}
+              >
+                {aisleChipOptions.map((aisle) => {
+                  const active = selectedCategory === aisle;
+                  const cCount =
+                    aisle === 'All'
+                      ? undefined
+                      : counts.aisleCounts?.[aisle] ?? 0;
+                  if (
+                    aisle !== 'All' &&
+                    !active &&
+                    searchQuery.trim().length > 0 &&
+                    cCount === 0
+                  ) {
+                    return null;
+                  }
+                  return (
+                    <Pressable
+                      key={aisle}
+                      onPress={() =>
+                        onCategoryChange(
+                          active && aisle !== 'All' ? 'All' : aisle
+                        )
+                      }
+                      style={[styles.chip, active && styles.chipBlue]}
+                    >
+                      <Text
+                        style={[
+                          styles.chipText,
+                          active && styles.chipTextActive,
+                        ]}
+                      >
+                        {aisle === 'All'
+                          ? 'All aisles'
+                          : cCount !== undefined
+                          ? `${aisle} (${cCount})`
+                          : aisle}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
 
               {/* Deal & Stock Chips */}
               <ScrollView
@@ -532,6 +619,13 @@ const styles = StyleSheet.create({
   },
   sec: {
     marginTop: 18,
+  },
+  secHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingRight: 16,
+    marginBottom: 10,
   },
   secHeading: {
     fontSize: 18,

@@ -1,12 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { reclassifyItems } from './normalize.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.resolve(__dirname, '..', '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'specials-cache.json');
 
+export const CACHE_SCHEMA_VERSION = 2;
+
 let memoryStore = {
+  schemaVersion: CACHE_SCHEMA_VERSION,
   items: [],
   catalogues: {},
   lastSyncedAt: null,
@@ -25,10 +29,12 @@ export async function loadCacheFromDisk() {
     const raw = await fs.readFile(CACHE_FILE, 'utf8');
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.items)) {
+      const repairedItems = reclassifyItems(parsed.items);
       memoryStore = {
         ...memoryStore,
         ...parsed,
-        syncStatus: parsed.items.length > 0 ? 'ready' : 'idle',
+        items: repairedItems,
+        syncStatus: repairedItems.length > 0 ? 'ready' : 'idle',
       };
       return true;
     }
@@ -42,6 +48,7 @@ export async function saveCacheToDisk(data) {
   memoryStore = {
     ...memoryStore,
     ...data,
+    schemaVersion: CACHE_SCHEMA_VERSION,
   };
   try {
     await fs.mkdir(CACHE_DIR, { recursive: true });

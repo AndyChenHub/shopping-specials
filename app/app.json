@@ -11,6 +11,8 @@
       "bundleIdentifier": "au.com.shoppingspecials.app",
       "buildNumber": "4",
       "infoPlist": {
+        "CFBundleDisplayName": "Aussie Specials",
+        "RCTAsyncStorageExcludeFromBackup": false,
         "NSLocationWhenInUseUsageDescription": "Aussie Specials uses your location to find nearby Woolworths, Coles, ALDI and IGA stores and check local stock availability.",
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true,
@@ -20,8 +22,10 @@
     },
     "android": {
       "package": "au.com.shoppingspecials.app",
+      "versionCode": 4,
+      "allowBackup": true,
       "adaptiveIcon": {
-        "backgroundColor": "#E8F5ED",
+        "backgroundColor": "#119F99",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -29,6 +33,8 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
+      "name": "Aussie Specials",
+      "shortName": "Aussie",
       "favicon": "./assets/favicon.png",
       "bundler": "metro"
     }

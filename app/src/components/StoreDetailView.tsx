@@ -18,6 +18,11 @@ import {
   getStoreHeroImage,
 } from '../theme/uiAssets';
 import {
+  CLIENT_CATEGORIES,
+  isSpecialItemHalfPrice,
+  isSpecialItemOnSale,
+} from '../services/normalizeClient';
+import {
   CatalogueInfo,
   DealFilter,
   SpecialItem,
@@ -69,13 +74,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
   const { timeLeft } = getCatalogueResetInfo();
 
   const specialsList = useMemo(
-    () =>
-      items.filter(
-        (i) =>
-          i.isOnSale ||
-          i.isHalfPrice ||
-          (i.saveAmount !== null && i.saveAmount > 0)
-      ),
+    () => items.filter(isSpecialItemOnSale),
     [items]
   );
 
@@ -95,17 +94,41 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
     for (const i of items) {
       if (i.category) set.add(i.category);
     }
-    return ['all', ...Array.from(set)];
+    const ordered = CLIENT_CATEGORIES.filter((c) => set.has(c));
+    for (const c of set) {
+      if (!ordered.includes(c)) ordered.push(c);
+    }
+    return ['all', ...ordered];
   }, [items]);
+
+  const chipCounts = useMemo(() => {
+    const catPool =
+      selectedCat === 'all'
+        ? items
+        : items.filter((i) => i.category === selectedCat);
+    const dealScoped = inStockOnly
+      ? catPool.filter((i) => i.inStock === true)
+      : catPool;
+    const stockScoped = catPool.filter((i) => {
+      if (dealFilter === 'half_price') return isSpecialItemHalfPrice(i);
+      if (dealFilter === 'sale') return isSpecialItemOnSale(i);
+      return true;
+    });
+    return {
+      allCount: dealScoped.length,
+      saleCount: dealScoped.filter(isSpecialItemOnSale).length,
+      halfCount: dealScoped.filter(isSpecialItemHalfPrice).length,
+      inStockCount: stockScoped.filter((i) => i.inStock === true).length,
+    };
+  }, [items, selectedCat, dealFilter, inStockOnly]);
 
   const filtered = useMemo(() => {
     return items.filter((i) => {
       if (selectedCat !== 'all' && i.category !== selectedCat) return false;
-      if (dealFilter === 'half_price' && !i.isHalfPrice) return false;
-      if (
-        dealFilter === 'sale' &&
-        !(i.isOnSale || i.isHalfPrice || (i.saveAmount && i.saveAmount > 0))
-      ) {
+      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(i)) {
+        return false;
+      }
+      if (dealFilter === 'sale' && !isSpecialItemOnSale(i)) {
         return false;
       }
       if (inStockOnly && i.inStock !== true) return false;
@@ -228,7 +251,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                     dealFilter === 'all' && styles.modeChipTextActive,
                   ]}
                 >
-                  All ({items.length})
+                  All ({chipCounts.allCount})
                 </Text>
               </Pressable>
               <Pressable
@@ -246,7 +269,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                     dealFilter === 'sale' && styles.modeChipTextActive,
                   ]}
                 >
-                  Specials ({specialsList.length})
+                  Specials ({chipCounts.saleCount})
                 </Text>
               </Pressable>
               <Pressable
@@ -266,7 +289,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                     dealFilter === 'half_price' && { color: COLORS.ink },
                   ]}
                 >
-                  ½ price
+                  ½ price ({chipCounts.halfCount})
                 </Text>
               </Pressable>
               <Pressable
@@ -282,7 +305,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                     inStockOnly && { color: '#FFFFFF' },
                   ]}
                 >
-                  In stock
+                  In stock ({chipCounts.inStockCount})
                 </Text>
               </Pressable>
             </ScrollView>
@@ -313,6 +336,24 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                 );
               })}
             </ScrollView>
+          </View>
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyStoreBox}>
+            <Text style={styles.emptyStoreTitle}>No matching items</Text>
+            <Text style={styles.emptyStoreSub}>
+              Try clearing an aisle, deal or stock filter to view more products.
+            </Text>
+            <Pressable
+              onPress={() => {
+                setSelectedCat('all');
+                setDealFilter('all');
+                setInStockOnly(false);
+              }}
+              style={styles.resetStoreBtn}
+            >
+              <Text style={styles.resetStoreBtnText}>Reset filters</Text>
+            </Pressable>
           </View>
         }
         renderItem={({ item }) => (
@@ -529,5 +570,35 @@ const styles = StyleSheet.create({
   },
   cardCell: {
     flex: 1,
+  },
+  emptyStoreBox: {
+    alignItems: 'center',
+    paddingVertical: 44,
+    paddingHorizontal: 28,
+    gap: 8,
+  },
+  emptyStoreTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: COLORS.ink,
+    textAlign: 'center',
+  },
+  emptyStoreSub: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: COLORS.muted,
+    textAlign: 'center',
+  },
+  resetStoreBtn: {
+    marginTop: 6,
+    backgroundColor: COLORS.blueSoft,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 999,
+  },
+  resetStoreBtnText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: COLORS.blueDark,
   },
 });

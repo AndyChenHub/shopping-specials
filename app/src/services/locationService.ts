@@ -9,8 +9,10 @@ import {
 } from '../types/specials';
 import { getApiBaseUrl, getCustomApiBaseUrlRaw, getLanMetroHost } from './api';
 import { decodeHtmlEntities } from './normalizeClient';
+import { syncUnifiedBackupSnapshot } from './savedStorage';
 
 const USER_LOCATION_STORAGE_KEY = '@aussie_specials_user_location_v1';
+const UNIFIED_BACKUP_KEY = '@aussie_specials_backup_snapshot_v1';
 
 const REQUEST_HEADERS: Record<string, string> = {
   'User-Agent':
@@ -26,18 +28,39 @@ let cachedIgaDirectory: Array<NearbyStoreOption & { latitude: number; longitude:
 let cachedAldiDirectory: Array<NearbyStoreOption & { latitude: number; longitude: number }> | null =
   null;
 
-export async function loadSavedUserLocation(): Promise<UserStoreLocation | null> {
-  if (memoryUserLocation !== undefined) return memoryUserLocation;
+export async function loadSavedUserLocation(
+  forceReload = false
+): Promise<UserStoreLocation | null> {
+  if (!forceReload && memoryUserLocation !== undefined) {
+    return memoryUserLocation;
+  }
   try {
     const raw = await AsyncStorage.getItem(USER_LOCATION_STORAGE_KEY);
-    if (!raw) {
-      memoryUserLocation = null;
-      return null;
+    if (raw) {
+      const parsed = JSON.parse(raw) as UserStoreLocation;
+      if (parsed && (parsed.postcode || parsed.suburb)) {
+        memoryUserLocation = parsed;
+        return parsed;
+      }
     }
-    const parsed = JSON.parse(raw) as UserStoreLocation;
-    if (parsed && (parsed.postcode || parsed.suburb)) {
-      memoryUserLocation = parsed;
-      return parsed;
+
+    // Self-heal from unified backup snapshot if primary key was missing
+    const backupRaw = await AsyncStorage.getItem(UNIFIED_BACKUP_KEY);
+    if (backupRaw) {
+      const backup = JSON.parse(backupRaw) as {
+        userLocation?: UserStoreLocation | null;
+      };
+      if (
+        backup?.userLocation &&
+        (backup.userLocation.postcode || backup.userLocation.suburb)
+      ) {
+        await AsyncStorage.setItem(
+          USER_LOCATION_STORAGE_KEY,
+          JSON.stringify(backup.userLocation)
+        );
+        memoryUserLocation = backup.userLocation;
+        return backup.userLocation;
+      }
     }
   } catch {
     // ignore corrupt storage
@@ -60,6 +83,7 @@ export async function saveUserLocation(
     } else {
       await AsyncStorage.removeItem(USER_LOCATION_STORAGE_KEY);
     }
+    await syncUnifiedBackupSnapshot({ userLocation: loc });
   } catch {
     // ignore storage errors
   }

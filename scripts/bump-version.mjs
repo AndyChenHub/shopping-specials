@@ -59,6 +59,10 @@ try {
 
 appJson.expo.version = nextVersion;
 appJson.expo.ios = { ...(appJson.expo.ios || {}), buildNumber: nextBuild };
+appJson.expo.android = {
+  ...(appJson.expo.android || {}),
+  versionCode: parseInt(nextBuild, 10),
+};
 appPkg.version = nextVersion;
 rootPkg.version = nextVersion;
 

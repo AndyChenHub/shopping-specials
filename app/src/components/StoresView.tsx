@@ -15,6 +15,8 @@ interface StoresViewProps {
   allItems: SpecialItem[];
   favStores: StoreId[];
   userLocation: UserStoreLocation | null;
+  selectedFilter?: string;
+  onSelectFilter?: (filter: string) => void;
   onOpenStore: (storeId: StoreId) => void;
   onOpenLocation: () => void;
 }
@@ -36,10 +38,21 @@ export const StoresView: React.FC<StoresViewProps> = ({
   allItems,
   favStores,
   userLocation,
+  selectedFilter,
+  onSelectFilter,
   onOpenStore,
   onOpenLocation,
 }) => {
-  const [filter, setFilter] = useState<StoreChipFilter>('All');
+  const [localFilter, setLocalFilter] = useState<StoreChipFilter>('All');
+  const filter: StoreChipFilter = STORE_FILTERS.includes(
+    selectedFilter as StoreChipFilter
+  )
+    ? (selectedFilter as StoreChipFilter)
+    : localFilter;
+  const setFilter = (next: StoreChipFilter) => {
+    setLocalFilter(next);
+    onSelectFilter?.(next);
+  };
 
   const itemsByStore = useMemo(() => {
     const map: Record<StoreId, SpecialItem[]> = {

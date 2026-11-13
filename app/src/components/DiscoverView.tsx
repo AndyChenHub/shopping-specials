@@ -26,6 +26,10 @@ import {
   UserStoreLocation,
 } from '../types/specials';
 import { APP_VERSION_INFO } from '../services/versionChecker';
+import {
+  isSpecialItemHalfPrice,
+  isSpecialItemOnSale,
+} from '../services/normalizeClient';
 import { SpecialCard } from './SpecialCard';
 import { SavingsRow } from './SavingsRow';
 import { VenueCard } from './VenueCard';
@@ -46,6 +50,10 @@ interface DiscoverViewProps {
   onDecrementItem: (item: SpecialItem) => void;
   onOpenStore: (storeId: StoreId) => void;
   onNavigateTab: (tab: 'discover' | 'stores' | 'search' | 'list') => void;
+  browseDealFilter?: DealFilter;
+  onChangeBrowseDealFilter?: (filter: DealFilter) => void;
+  browseInStockOnly?: boolean;
+  onToggleBrowseInStockOnly?: () => void;
 }
 
 const DISCOVER_STORE_ORDER: StoreId[] = ['woolworths', 'coles', 'aldi', 'iga'];
@@ -66,22 +74,29 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   onDecrementItem,
   onOpenStore,
   onNavigateTab,
+  browseDealFilter: controlledDealFilter,
+  onChangeBrowseDealFilter,
+  browseInStockOnly: controlledInStockOnly,
+  onToggleBrowseInStockOnly,
 }) => {
   const { width } = useWindowDimensions();
   const numColumns = width >= 1100 ? 4 : width >= 740 ? 3 : 2;
 
   const [heroIndex, setHeroIndex] = useState<number>(0);
   const [selectedCat, setSelectedCat] = useState<string | null>(null);
-  const [browseDealFilter, setBrowseDealFilter] = useState<DealFilter>('all');
-  const [browseInStockOnly, setBrowseInStockOnly] = useState<boolean>(false);
+  const [localDealFilter, setLocalDealFilter] = useState<DealFilter>('all');
+  const [localInStockOnly, setLocalInStockOnly] = useState<boolean>(false);
+
+  const browseDealFilter = controlledDealFilter ?? localDealFilter;
+  const setBrowseDealFilter = onChangeBrowseDealFilter ?? setLocalDealFilter;
+  const browseInStockOnly = controlledInStockOnly ?? localInStockOnly;
+  const toggleBrowseInStockOnly =
+    onToggleBrowseInStockOnly ?? (() => setLocalInStockOnly((v) => !v));
 
   const { timeLeft } = getCatalogueResetInfo();
 
   const halfPriceDeals = useMemo(
-    () =>
-      allItems
-        .filter((i) => i.isHalfPrice || (i.discountPercent && i.discountPercent >= 48))
-        .slice(0, 18),
+    () => allItems.filter(isSpecialItemHalfPrice).slice(0, 18),
     [allItems]
   );
 
@@ -118,14 +133,33 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     return map;
   }, [allItems]);
 
+  const browseChipCounts = useMemo(() => {
+    const catScoped = selectedCat
+      ? allItems.filter((item) => item.category === selectedCat)
+      : allItems;
+    const dealScoped = browseInStockOnly
+      ? catScoped.filter((item) => item.inStock === true)
+      : catScoped;
+    const stockScoped = catScoped.filter((item) => {
+      if (browseDealFilter === 'half_price') return isSpecialItemHalfPrice(item);
+      if (browseDealFilter === 'sale') return isSpecialItemOnSale(item);
+      return true;
+    });
+    return {
+      allCount: dealScoped.length,
+      saleCount: dealScoped.filter(isSpecialItemOnSale).length,
+      halfCount: dealScoped.filter(isSpecialItemHalfPrice).length,
+      inStockCount: stockScoped.filter((item) => item.inStock === true).length,
+    };
+  }, [allItems, selectedCat, browseDealFilter, browseInStockOnly]);
+
   const gridPool = useMemo(() => {
     return allItems.filter((item) => {
       if (selectedCat && item.category !== selectedCat) return false;
-      if (browseDealFilter === 'half_price' && !item.isHalfPrice) return false;
-      if (
-        browseDealFilter === 'sale' &&
-        !(item.isOnSale || item.isHalfPrice || (item.saveAmount && item.saveAmount > 0))
-      ) {
+      if (browseDealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) {
+        return false;
+      }
+      if (browseDealFilter === 'sale' && !isSpecialItemOnSale(item)) {
         return false;
       }
       if (browseInStockOnly && item.inStock !== true) return false;
@@ -173,7 +207,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             browseDealFilter === 'all' && styles.filterChipTextActive,
           ]}
         >
-          All items
+          All items ({browseChipCounts.allCount})
         </Text>
       </Pressable>
 
@@ -197,7 +231,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             browseDealFilter === 'sale' && styles.filterChipTextActive,
           ]}
         >
-          On sale
+          On sale ({browseChipCounts.saleCount})
         </Text>
       </Pressable>
 
@@ -218,12 +252,12 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             browseDealFilter === 'half_price' && { color: COLORS.ink, fontWeight: '900' },
           ]}
         >
-          ½ price
+          ½ price ({browseChipCounts.halfCount})
         </Text>
       </Pressable>
 
       <Pressable
-        onPress={() => setBrowseInStockOnly((v) => !v)}
+        onPress={toggleBrowseInStockOnly}
         style={[
           styles.filterChip,
           browseInStockOnly && styles.filterChipGreen,
@@ -240,35 +274,57 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             browseInStockOnly && styles.filterChipTextActive,
           ]}
         >
-          In stock
+          In stock ({browseChipCounts.inStockCount})
         </Text>
       </Pressable>
     </ScrollView>
   );
 
-  const renderProductGrid = () => (
-    <View style={styles.gridContainer}>
-      {gridRows.map((row, rIdx) => (
-        <View key={`row-${rIdx}`} style={styles.gridRow}>
-          {row.map((item) => (
-            <View key={item.id} style={styles.gridCell}>
-              <SpecialCard
-                item={item}
-                quantity={qtyMap[item.id] || 0}
-                onPress={onSelectProduct}
-                onIncrement={onIncrementItem}
-                onDecrement={onDecrementItem}
-              />
-            </View>
-          ))}
-          {row.length < numColumns &&
-            Array.from({ length: numColumns - row.length }).map((_, emptyIdx) => (
-              <View key={`empty-${emptyIdx}`} style={styles.gridCell} />
-            ))}
+  const renderProductGrid = () => {
+    if (displayedGridItems.length === 0) {
+      return (
+        <View style={styles.emptyFilterBox}>
+          <Text style={styles.emptyFilterTitle}>No matching items</Text>
+          <Text style={styles.emptyFilterSub}>
+            Try clearing a deal or stock filter to see all items in this aisle.
+          </Text>
+          <Pressable
+            onPress={() => {
+              setBrowseDealFilter('all');
+              if (browseInStockOnly) toggleBrowseInStockOnly();
+            }}
+            style={styles.seeAllPill}
+          >
+            <Text style={styles.seeAllText}>Reset filters</Text>
+          </Pressable>
         </View>
-      ))}
-    </View>
-  );
+      );
+    }
+
+    return (
+      <View style={styles.gridContainer}>
+        {gridRows.map((row, rIdx) => (
+          <View key={`row-${rIdx}`} style={styles.gridRow}>
+            {row.map((item) => (
+              <View key={item.id} style={styles.gridCell}>
+                <SpecialCard
+                  item={item}
+                  quantity={qtyMap[item.id] || 0}
+                  onPress={onSelectProduct}
+                  onIncrement={onIncrementItem}
+                  onDecrement={onDecrementItem}
+                />
+              </View>
+            ))}
+            {row.length < numColumns &&
+              Array.from({ length: numColumns - row.length }).map((_, emptyIdx) => (
+                <View key={`empty-${emptyIdx}`} style={styles.gridCell} />
+              ))}
+          </View>
+        ))}
+      </View>
+    );
+  };
 
   return (
     <ScrollView
@@ -335,9 +391,12 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
             {hasAppUpdate && <View style={styles.updateDot} />}
           </Pressable>
 
-          <Text style={styles.wordmark}>
-            snag<Text style={styles.wordmarkDot}>.</Text>
-          </Text>
+          <View style={styles.brandLockup}>
+            <Text style={styles.wordmarkTop}>AUSSIE</Text>
+            <Text style={styles.wordmark}>
+              Specials<Text style={styles.wordmarkDot}>.</Text>
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -714,12 +773,23 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
   },
+  brandLockup: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  wordmarkTop: {
+    fontSize: 9.5,
+    fontWeight: '900',
+    color: COLORS.green,
+    letterSpacing: 1.1,
+    lineHeight: 11,
+  },
   wordmark: {
-    fontSize: 26,
+    fontSize: 18,
     fontWeight: '900',
     color: COLORS.blue,
-    letterSpacing: -1.4,
-    lineHeight: 28,
+    letterSpacing: -0.8,
+    lineHeight: 19,
   },
   wordmarkDot: {
     color: COLORS.yellow,
@@ -935,6 +1005,25 @@ const styles = StyleSheet.create({
   },
   gridCell: {
     flex: 1,
+  },
+  emptyFilterBox: {
+    alignItems: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 28,
+    gap: 8,
+  },
+  emptyFilterTitle: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: COLORS.ink,
+    textAlign: 'center',
+  },
+  emptyFilterSub: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: COLORS.muted,
+    textAlign: 'center',
+    marginBottom: 4,
   },
   footerNote: {
     textAlign: 'center',

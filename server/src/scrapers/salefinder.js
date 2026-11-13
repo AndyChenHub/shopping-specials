@@ -1,5 +1,10 @@
 import * as cheerio from 'cheerio';
-import { classifyCategory, computeSavings, cleanText } from '../normalize.js';
+import {
+  classifyCategory,
+  computeSavings,
+  cleanText,
+  extractSaleFinderUrlHint,
+} from '../normalize.js';
 
 const SALEFINDER_BASE = 'https://www.salefinder.com.au';
 const USER_AGENT =
@@ -62,12 +67,7 @@ function extractPackageSize(title) {
  * e.g. "/68850/food-and-beverage/groceries/frozen-food/bulla-.../688501003/"
  */
 function extractUrlCategoryHint(href = '') {
-  const parts = href.split('/').filter(Boolean);
-  // Skip numeric saleId at index 0 and item slug/id at end
-  if (parts.length >= 4) {
-    return parts.slice(1, -2).join(' ').replace(/-/g, ' ');
-  }
-  return '';
+  return extractSaleFinderUrlHint(href);
 }
 
 /**
