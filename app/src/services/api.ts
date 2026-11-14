@@ -14,6 +14,8 @@ import { downloadAllSpecialsOnDevice } from './directFetcher';
 import { reclassifySpecialItems } from './normalizeClient';
 import {
   compareItemAcrossCompetitorsOnDevice,
+  fetchSupermarketRangePage,
+  RangePageOptions,
   searchAllCompetitorsLive,
 } from './competitorSearch';
 import {
@@ -23,8 +25,11 @@ import {
 import { syncUnifiedBackupSnapshot } from './savedStorage';
 
 const CUSTOM_API_URL_KEY = '@aussie_specials_custom_api_url';
-const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v4';
-const LEGACY_CACHED_FEED_KEY = '@aussie_specials_feed_cache_v3';
+const CACHED_FEED_KEY = '@aussie_specials_feed_cache_v5';
+const LEGACY_CACHED_FEED_KEYS = [
+  '@aussie_specials_feed_cache_v4',
+  '@aussie_specials_feed_cache_v3',
+];
 const UNIFIED_BACKUP_KEY = '@aussie_specials_backup_snapshot_v1';
 const DEFAULT_BACKEND_PORT = 3001;
 
@@ -134,18 +139,19 @@ export async function loadCachedFeedFromDevice(): Promise<SpecialsResponse | nul
       }
     }
 
-    // Migrate & repair categories from v3 feed cache if present
-    const legacyRaw = await AsyncStorage.getItem(LEGACY_CACHED_FEED_KEY);
-    if (legacyRaw) {
-      const parsed = JSON.parse(legacyRaw) as SpecialsResponse;
-      if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
-        const migrated: SpecialsResponse = {
-          ...parsed,
-          items: reclassifySpecialItems(parsed.items),
-        };
-        await AsyncStorage.setItem(CACHED_FEED_KEY, JSON.stringify(migrated));
-        await AsyncStorage.removeItem(LEGACY_CACHED_FEED_KEY);
-        return migrated;
+    // Provide instant UI startup from legacy v4/v3 cache while marking lastSyncedAt empty
+    // so fetchSpecials() automatically refreshes the expanded v5 full-range supermarket feed!
+    for (const legacyKey of LEGACY_CACHED_FEED_KEYS) {
+      const legacyRaw = await AsyncStorage.getItem(legacyKey);
+      if (legacyRaw) {
+        const parsed = JSON.parse(legacyRaw) as SpecialsResponse;
+        if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+          return {
+            ...parsed,
+            items: reclassifySpecialItems(parsed.items),
+            lastSyncedAt: '',
+          };
+        }
       }
     }
   } catch {
@@ -157,6 +163,9 @@ export async function loadCachedFeedFromDevice(): Promise<SpecialsResponse | nul
 export async function saveCachedFeedToDevice(feed: SpecialsResponse): Promise<void> {
   try {
     await AsyncStorage.setItem(CACHED_FEED_KEY, JSON.stringify(feed));
+    for (const legacyKey of LEGACY_CACHED_FEED_KEYS) {
+      await AsyncStorage.removeItem(legacyKey).catch(() => undefined);
+    }
   } catch {
     // ignore quota errors
   }
@@ -202,11 +211,14 @@ function appendLocationParams(
 export interface FetchSpecialsParams {
   store?: StoreFilter;
   category?: string;
+  subCategory?: string;
   dealFilter?: DealFilter;
   halfPrice?: boolean;
   inStockOnly?: boolean;
   q?: string;
   live?: boolean;
+  range?: boolean;
+  page?: number;
   sort?: SortOption;
   locationCtx?: LocationSearchContext;
 }
@@ -226,6 +238,9 @@ export async function fetchSpecials(
       if (params.category && params.category !== 'All') {
         query.set('category', params.category);
       }
+      if (params.subCategory && params.subCategory !== 'All') {
+        query.set('subCategory', params.subCategory);
+      }
       if (params.dealFilter && params.dealFilter !== 'all') {
         query.set('dealFilter', params.dealFilter);
       }
@@ -233,6 +248,8 @@ export async function fetchSpecials(
       if (params.inStockOnly) query.set('inStockOnly', 'true');
       if (params.q?.trim()) query.set('q', params.q.trim());
       if (params.live) query.set('live', 'true');
+      if (params.range) query.set('range', 'true');
+      if (params.page && params.page > 1) query.set('page', String(params.page));
       if (params.sort) query.set('sort', params.sort);
       appendLocationParams(query, locCtx);
 
@@ -251,8 +268,11 @@ export async function fetchSpecials(
         lastActiveSource = 'companion-server';
         if (
           !params.q &&
+          !params.range &&
+          (!params.page || params.page === 1) &&
           (!params.store || params.store === 'all') &&
           (!params.category || params.category === 'All') &&
+          (!params.subCategory || params.subCategory === 'All') &&
           (!params.dealFilter || params.dealFilter === 'all') &&
           !params.inStockOnly
         ) {
@@ -273,8 +293,21 @@ export async function fetchSpecials(
   // Native iOS On-Device Direct Fetching (works anywhere on 4G/5G/Wi-Fi with zero server!)
   lastActiveSource = 'on-device';
 
-  if (params.live && params.q?.trim()) {
-    const liveItems = await searchAllCompetitorsLive(params.q.trim(), locCtx);
+  if (params.range || (params.live && params.q?.trim())) {
+    const liveItems = params.range
+      ? await fetchSupermarketRangePage({
+          query: params.q?.trim() || '',
+          category: params.category || 'All',
+          subCategory: params.subCategory || 'All',
+          store: params.store || 'all',
+          page: params.page || 1,
+          locationCtx: locCtx,
+        })
+      : await searchAllCompetitorsLive(
+          params.q!.trim(),
+          locCtx,
+          params.page || 1
+        );
     const statFor = (s: SpecialItem['store']) => {
       const arr = liveItems.filter((i) => i.store === s);
       return {
@@ -285,7 +318,7 @@ export async function fetchSpecials(
       };
     };
     return {
-      items: liveItems,
+      items: reclassifySpecialItems(liveItems),
       total: liveItems.length,
       categories: [],
       storeStats: {
@@ -301,18 +334,83 @@ export async function fetchSpecials(
     };
   }
 
-  // Return device cache if fresh (< 4 hours old), else download fresh catalogues + everyday items on-device
-  const cached = await loadCachedFeedFromDevice();
-  if (cached?.lastSyncedAt) {
-    const ageMs = Date.now() - new Date(cached.lastSyncedAt).getTime();
-    if (ageMs < 4 * 60 * 60 * 1000) {
-      return cached;
+  // Return v5 device cache if fresh (< 4 hours old), else download fresh catalogues + everyday items on-device
+  try {
+    const rawV5 = await AsyncStorage.getItem(CACHED_FEED_KEY);
+    if (rawV5) {
+      const cached = JSON.parse(rawV5) as SpecialsResponse;
+      if (cached?.lastSyncedAt && Array.isArray(cached.items) && cached.items.length > 0) {
+        const ageMs = Date.now() - new Date(cached.lastSyncedAt).getTime();
+        if (ageMs < 4 * 60 * 60 * 1000) {
+          return {
+            ...cached,
+            items: reclassifySpecialItems(cached.items),
+          };
+        }
+      }
     }
+  } catch {
+    // ignore cache check error
   }
 
   const fresh = await downloadAllSpecialsOnDevice(locCtx);
   await saveCachedFeedToDevice(fresh);
   return fresh;
+}
+
+export async function fetchMoreSupermarketRange(
+  options: RangePageOptions = {}
+): Promise<SpecialItem[]> {
+  const savedLoc = await loadSavedUserLocation();
+  const locCtx = options.locationCtx || toLocationSearchContext(savedLoc);
+  const tryServer = await shouldTryCompanionServerFirst();
+
+  if (tryServer) {
+    try {
+      const baseUrl = await getApiBaseUrl();
+      const query = new URLSearchParams();
+      query.set('range', 'true');
+      query.set('page', String(Math.max(1, options.page || 1)));
+      if (options.store && options.store !== 'all') {
+        query.set('store', options.store);
+      }
+      if (options.category && options.category !== 'All') {
+        query.set('category', options.category);
+      }
+      if (options.subCategory && options.subCategory !== 'All') {
+        query.set('subCategory', options.subCategory);
+      }
+      if (options.query?.trim()) {
+        query.set('q', options.query.trim());
+      }
+      appendLocationParams(query, locCtx);
+
+      const timeout = Platform.OS === 'web' ? 20000 : 5500;
+      const res = await fetchWithTimeout(
+        `${baseUrl}/api/specials?${query.toString()}`,
+        {},
+        timeout
+      );
+      if (res.ok) {
+        const rawJson: SpecialsResponse = await res.json();
+        lastActiveSource = 'companion-server';
+        return reclassifySpecialItems(rawJson.items || []);
+      }
+    } catch (err) {
+      if (Platform.OS === 'web') {
+        throw err instanceof Error
+          ? err
+          : new Error('Cannot reach companion server to load more items');
+      }
+    }
+  }
+
+  lastActiveSource = 'on-device';
+  const items = await fetchSupermarketRangePage({
+    ...options,
+    locationCtx: locCtx,
+  });
+  return reclassifySpecialItems(items);
 }
 
 export async function compareCompetitorPrices(

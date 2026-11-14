@@ -1,7 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import os from 'node:os';
-import { CATEGORIES } from './normalize.js';
+import {
+  CATEGORIES,
+  SUBCATEGORY_FILTERS,
+  matchesSubCategory,
+} from './normalize.js';
 import {
   CACHE_SCHEMA_VERSION,
   loadCacheFromDisk,
@@ -10,6 +14,7 @@ import {
 import {
   syncAllSupermarkets,
   searchSpecialsLive,
+  fetchSupermarketRangePage,
   compareItemAcrossCompetitors,
   searchSuburbs,
   findNearbyStores,
@@ -112,21 +117,34 @@ app.get('/api/specials', async (req, res) => {
     const {
       store = 'all',
       category = 'All',
+      subCategory = 'All',
       dealFilter = 'all',
       onSale = 'false',
       halfPrice = 'false',
       inStockOnly = 'false',
       q = '',
       live = 'false',
+      range = 'false',
+      page = '1',
       sort = 'featured',
     } = req.query;
 
+    const pageNum = Math.max(1, parseInt(String(page || '1'), 10) || 1);
     let pool = state.items;
 
-    // Optional live web search when searching a keyword
-    if (String(q).trim()) {
+    // Live full-range pagination or live keyword search
+    if (range === 'true' || range === '1') {
+      pool = await fetchSupermarketRangePage({
+        query: String(q || ''),
+        category: String(category || 'All'),
+        subCategory: String(subCategory || 'All'),
+        store: String(store || 'all'),
+        page: pageNum,
+        locationCtx,
+      });
+    } else if (String(q).trim()) {
       if (live === 'true' || live === '1') {
-        pool = await searchSpecialsLive(String(q), locationCtx);
+        pool = await searchSpecialsLive(String(q), locationCtx, pageNum);
       } else {
         const tokens = String(q)
           .trim()
@@ -134,7 +152,7 @@ app.get('/api/specials', async (req, res) => {
           .split(/\s+/)
           .filter(Boolean);
         pool = pool.filter((item) => {
-          const hay = `${item.title} ${item.brand || ''} ${item.category} ${item.promoText || ''} ${item.storeName}`.toLowerCase();
+          const hay = `${item.title} ${item.brand || ''} ${item.category} ${item.subCategory || ''} ${item.promoText || ''} ${item.storeName}`.toLowerCase();
           return tokens.every((t) => hay.includes(t));
         });
       }
@@ -152,7 +170,7 @@ app.get('/api/specials', async (req, res) => {
       pool = pool.filter((item) => allowed.has(item.store));
     }
 
-    // Deal / sale filter ('all' | 'sale' | 'half_price')
+    // Deal / sale filter ('all' | 'regular' | 'sale' | 'half_price')
     const isItemHalfPrice = (item) =>
       Boolean(
         item.isHalfPrice ||
@@ -175,10 +193,17 @@ app.get('/api/specials', async (req, res) => {
       pool = pool.filter((item) => isItemHalfPrice(item));
     } else if (dealFilter === 'sale' || onSale === 'true' || onSale === '1') {
       pool = pool.filter((item) => isItemOnSale(item));
+    } else if (dealFilter === 'regular') {
+      pool = pool.filter((item) => !isItemOnSale(item));
     }
 
     if (inStockOnly === 'true' || inStockOnly === '1') {
       pool = pool.filter((item) => item.inStock === true);
+    }
+
+    // Subcategory filter (handles both leaf subcategories & umbrella filters like Snacks / Meat)
+    if (subCategory && subCategory !== 'All' && subCategory !== 'all') {
+      pool = pool.filter((item) => matchesSubCategory(item, String(subCategory)));
     }
 
     // Category filter
@@ -207,11 +232,11 @@ app.get('/api/specials', async (req, res) => {
       items.sort((a, b) => (a.price ?? 9999) - (b.price ?? 9999));
     }
 
-    // Compute dynamic category counts prior to category filter for UI badges
     res.json({
       items,
       total: items.length,
       categories: CATEGORIES,
+      subCategories: SUBCATEGORY_FILTERS,
       storeStats: state.storeStats,
       catalogues: state.catalogues,
       lastSyncedAt: state.lastSyncedAt,

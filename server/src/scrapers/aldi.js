@@ -1,4 +1,9 @@
-import { classifyCategory, computeSavings, cleanText } from '../normalize.js';
+import {
+  classifyCategory,
+  classifySubCategory,
+  computeSavings,
+  cleanText,
+} from '../normalize.js';
 
 const ALDI_API_BASE = 'https://api.aldi.com.au/v3/product-search';
 const ALDI_WEB_BASE = 'https://www.aldi.com.au';
@@ -34,10 +39,13 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys', locationCtx = {}) {
     .filter(Boolean)
     .join(' ');
 
+  const isSpecialCollection =
+    /super\s*savers?|special\s*buys?|low\s*price\s*special/i.test(sourceLabel);
+
   const rawPromo = [
     item.price.savingsDisplay,
     badgeLabels,
-    sourceLabel,
+    isSpecialCollection ? sourceLabel : '',
   ]
     .filter(Boolean)
     .join(' • ');
@@ -59,13 +67,10 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys', locationCtx = {}) {
       : baseName;
 
   const rawCatNames = (item.categories || []).map((c) => c.name).join(' ');
-  const category = classifyCategory(
-    `${rawCatNames} ${sourceLabel}`,
-    fullTitle,
-    'aldi'
-  );
+  const rawHint = `${rawCatNames} ${isSpecialCollection ? sourceLabel : ''}`.trim();
+  const category = classifyCategory(rawHint, fullTitle, 'aldi');
+  const subCategory = classifySubCategory(rawHint, fullTitle, category);
 
-  const isSpecialCollection = /super\s*savers?|special\s*buys?/i.test(sourceLabel);
   const isOnSale = Boolean(
     savings.isHalfPrice ||
       (savings.saveAmount && savings.saveAmount > 0) ||
@@ -74,7 +79,11 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys', locationCtx = {}) {
       isSpecialCollection
   );
 
-  let promoText = isOnSale ? sourceLabel : null;
+  let promoText = isOnSale
+    ? isSpecialCollection
+      ? sourceLabel
+      : 'Special Buy'
+    : null;
   if (savings.isHalfPrice) {
     promoText = '1/2 Price';
   } else if (item.price.savingsDisplay) {
@@ -125,9 +134,12 @@ function mapAldiProduct(item, sourceLabel = 'Special Buys', locationCtx = {}) {
     promoText,
     unitPrice: cleanText(item.price.comparisonDisplay || item.price.perUnitDisplay || '') || null,
     category,
+    subCategory,
     imageUrl: buildAldiImageUrl(item),
     productUrl: productSlug,
-    catalogueName: `ALDI ${sourceLabel}`,
+    catalogueName: isOnSale
+      ? `ALDI ${isSpecialCollection ? sourceLabel : 'Special Buys'}`
+      : 'ALDI Everyday Range',
     validDates,
     inStock,
     stockLabel,
@@ -202,16 +214,29 @@ export async function fetchAldiSpecials({
   const catFacet = facets.find((f) => f.name === 'category-tree');
   const themeFacet = facets.find((f) => f.name === 'theme');
 
-  const collections = [];
+  const promoCollections = [];
+  const everydayDepartments = [];
 
   if (catFacet?.values) {
     for (const v of catFacet.values) {
       if (/super\s*savers?/i.test(v.label)) {
-        collections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Super Savers', limit: 30 });
+        promoCollections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Super Savers', limit: 48 });
       } else if (/limited\s*time/i.test(v.label)) {
-        collections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Special Buys', limit: 48 });
+        promoCollections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Special Buys', limit: 60 });
       } else if (/new\s*low\s*price/i.test(v.label)) {
-        collections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Low Price Special', limit: 48 });
+        promoCollections.push({ param: 'categoryKey', key: v.key, fallbackParam: 'categoryTree', label: 'Low Price Special', limit: 48 });
+      } else if (
+        /fruits?\s*(?:&|and)\s*veg|meat\s*(?:&|and)\s*seafood|deli\s*(?:&|and)\s*chilled|dairy|pantry|bakery|freezer|drinks|health\s*(?:&|and)\s*beauty|baby|cleaning\s*(?:&|and)\s*household|pets?|snacks?\s*(?:&|and)\s*confectionery/i.test(
+          v.label
+        )
+      ) {
+        everydayDepartments.push({
+          param: 'categoryKey',
+          key: v.key,
+          fallbackParam: 'categoryTree',
+          label: 'Everyday Range',
+          limit: 60,
+        });
       }
     }
   }
@@ -219,55 +244,65 @@ export async function fetchAldiSpecials({
   if (themeFacet?.values) {
     for (const v of themeFacet.values) {
       if (/grocery\s*specials/i.test(v.label)) {
-        collections.push({ param: 'theme', key: v.key, label: 'Grocery Special Buys', limit: 32 });
+        promoCollections.push({ param: 'theme', key: v.key, label: 'Grocery Special Buys', limit: 48 });
       }
     }
   }
 
-  // Fallback feeds if facets change
-  if (collections.length === 0) {
-    collections.push({ param: 'q', key: 'special', label: 'Special Buys', limit: 48 });
+  if (promoCollections.length === 0) {
+    promoCollections.push({ param: 'q', key: 'special', label: 'Special Buys', limit: 48 });
   }
 
-  await Promise.allSettled(
-    collections.map(async (col) => {
-      let data = [];
-      try {
-        const res = await queryAldiApi({
-          [col.param]: col.key,
-          limit: col.limit,
-          offset: 0,
-          sort: 'relevance',
-          ...spParam,
-        });
-        data = res.data || [];
-      } catch {
-        // ignore and try fallback param
-      }
-
-      if (data.length === 0 && col.fallbackParam) {
+  const fetchCollectionBatch = async (batch) => {
+    await Promise.allSettled(
+      batch.map(async (col) => {
+        let data = [];
         try {
-          const res2 = await queryAldiApi({
-            [col.fallbackParam]: col.key,
+          const res = await queryAldiApi({
+            [col.param]: col.key,
             limit: col.limit,
             offset: 0,
             sort: 'relevance',
             ...spParam,
           });
-          data = res2.data || [];
+          data = res.data || [];
         } catch {
-          // ignore
+          // ignore and try fallback param
         }
-      }
 
-      for (const raw of data) {
-        const mapped = mapAldiProduct(raw, col.label, locationCtx);
-        if (mapped && !seen.has(mapped.id)) {
-          seen.set(mapped.id, mapped);
+        if (data.length === 0 && col.fallbackParam) {
+          try {
+            const res2 = await queryAldiApi({
+              [col.fallbackParam]: col.key,
+              limit: col.limit,
+              offset: 0,
+              sort: 'relevance',
+              ...spParam,
+            });
+            data = res2.data || [];
+          } catch {
+            // ignore
+          }
         }
-      }
-    })
-  );
+
+        for (const raw of data) {
+          const mapped = mapAldiProduct(raw, col.label, locationCtx);
+          if (mapped && !seen.has(mapped.id)) {
+            seen.set(mapped.id, mapped);
+          }
+        }
+      })
+    );
+  };
+
+  // Fetch promotional collections first so promo items keep their Special Buys / Super Savers badge
+  await fetchCollectionBatch(promoCollections);
+
+  // Then fetch all everyday ALDI grocery departments in gentle batches of 4
+  const deptBatchSize = 4;
+  for (let i = 0; i < everydayDepartments.length; i += deptBatchSize) {
+    await fetchCollectionBatch(everydayDepartments.slice(i, i + deptBatchSize));
+  }
 
   // If still empty, use discovery items
   if (seen.size === 0) {

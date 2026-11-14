@@ -24,13 +24,18 @@ import {
   UserStoreLocation,
 } from './src/types/specials';
 import {
+  fetchMoreSupermarketRange,
   fetchSpecials,
   loadCachedFeedFromDevice,
   triggerWebSync,
 } from './src/services/api';
 import {
+  getSubCategoryDef,
   isSpecialItemHalfPrice,
   isSpecialItemOnSale,
+  isSpecialItemRegularPrice,
+  matchesSubCategory,
+  SUBCATEGORY_FILTERS,
 } from './src/services/normalizeClient';
 import {
   loadSavedUserLocation,
@@ -82,11 +87,41 @@ function MainApp() {
   const [initialLoading, setInitialLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [liveSearching, setLiveSearching] = useState<boolean>(false);
+  const [loadingMoreRange, setLoadingMoreRange] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const rangePageMapRef = useRef<Record<string, number>>({});
+  const autoWarmedKeysRef = useRef<Set<string>>(new Set());
 
-  // Search Screen Ephemeral Query & Category
+  // Search Screen Ephemeral Query, Aisle & Subcategory
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [selectedSubCategory, setSelectedSubCategory] = useState<string>('All');
+
+  const handleSearchCategoryChange = useCallback((nextCat: string) => {
+    setSelectedCategory(nextCat);
+    setSelectedSubCategory((prevSub) => {
+      if (prevSub === 'All' || nextCat === 'All') return prevSub;
+      const subDef = getSubCategoryDef(prevSub);
+      if (subDef && subDef.parentCategory !== nextCat) {
+        return 'All';
+      }
+      return prevSub;
+    });
+  }, []);
+
+  const handleSearchSubCategoryChange = useCallback((nextSub: string) => {
+    setSelectedSubCategory(nextSub);
+    if (nextSub !== 'All') {
+      const subDef = getSubCategoryDef(nextSub);
+      if (subDef) {
+        setSelectedCategory((prevCat) =>
+          prevCat !== 'All' && prevCat !== subDef.parentCategory
+            ? subDef.parentCategory
+            : prevCat
+        );
+      }
+    }
+  }, []);
 
   // User Location & Local Stores
   const [userLocation, setUserLocation] = useState<UserStoreLocation | null>(
@@ -232,19 +267,24 @@ function MainApp() {
   );
 
   const loadCataloguesFromServer = useCallback(async () => {
+    let hadCachedItems = false;
     try {
       setErrorMsg(null);
       const cached = await loadCachedFeedFromDevice();
       if (cached && cached.items?.length > 0) {
+        hadCachedItems = true;
         applySpecialsResponse(cached);
         setInitialLoading(false);
       }
       const data = await fetchSpecials();
+      rangePageMapRef.current = {};
       applySpecialsResponse(data);
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'Unable to fetch specials';
-      setErrorMsg(msg);
+      if (!hadCachedItems) {
+        const msg =
+          err instanceof Error ? err.message : 'Unable to fetch specials';
+        setErrorMsg(msg);
+      }
     } finally {
       setInitialLoading(false);
     }
@@ -516,6 +556,75 @@ function MainApp() {
     [loadCataloguesFromServer, showToast]
   );
 
+  // On-Demand Full Supermarket Range Loader (Everyday + Specials Pagination)
+  const handleLoadMoreRange = useCallback(
+    async (
+      opts: {
+        query?: string;
+        category?: string;
+        subCategory?: string;
+        store?: StoreFilter;
+        silent?: boolean;
+      } = {}
+    ) => {
+      if (loadingMoreRange) return;
+      const q = (opts.query || '').trim();
+      const cat = opts.category || 'All';
+      const sub = opts.subCategory || 'All';
+      const st = opts.store || 'all';
+      const bucketKey = `${st}|${cat}|${sub}|${q.toLowerCase()}`;
+      const baseStart = q.length >= 2 ? 1 : 0;
+      const nextPage = (rangePageMapRef.current[bucketKey] ?? baseStart) + 1;
+      rangePageMapRef.current[bucketKey] = nextPage;
+
+      try {
+        setLoadingMoreRange(true);
+        const fetched = await fetchMoreSupermarketRange({
+          query: q,
+          category: cat,
+          subCategory: sub,
+          store: st,
+          page: nextPage,
+          locationCtx: toLocationSearchContext(userLocation),
+        });
+
+        let addedCount = 0;
+        if (fetched.length > 0) {
+          setAllItems((prev) => {
+            const existingIds = new Set(prev.map((i) => i.id));
+            const uniqueNew = fetched.filter((i) => !existingIds.has(i.id));
+            addedCount = uniqueNew.length;
+            return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
+          });
+          if (q.length >= 2) {
+            setLiveExtraItems((prev) => {
+              const existingIds = new Set(prev.map((i) => i.id));
+              const uniqueNew = fetched.filter((i) => !existingIds.has(i.id));
+              return uniqueNew.length > 0 ? [...prev, ...uniqueNew] : prev;
+            });
+          }
+        }
+
+        if (!opts.silent) {
+          showToast(
+            addedCount > 0
+              ? `Loaded ${addedCount} more supermarket items`
+              : fetched.length > 0
+              ? 'All items from this batch are already shown'
+              : 'No additional items found'
+          );
+        }
+      } catch {
+        if (!opts.silent) {
+          showToast('Could not load additional items right now');
+        }
+      } finally {
+        setLoadingMoreRange(false);
+      }
+    },
+    [loadingMoreRange, showToast, userLocation]
+  );
+
   // Search Pool & Filtering
   const queryMatchedPool = useMemo(() => {
     const qNorm = searchQuery.trim().toLowerCase();
@@ -524,8 +633,8 @@ function MainApp() {
     const tokens = qNorm.split(/\s+/).filter(Boolean);
     const matchesTokens = (item: SpecialItem) => {
       const hay = `${item.title} ${item.brand || ''} ${item.category} ${
-        item.promoText || ''
-      } ${item.storeName}`.toLowerCase();
+        item.subCategory || ''
+      } ${item.promoText || ''} ${item.storeName}`.toLowerCase();
       return tokens.every((t) => hay.includes(t));
     };
 
@@ -546,10 +655,73 @@ function MainApp() {
     return out;
   }, [allItems, liveExtraItems, liveSearchedQuery, searchQuery]);
 
+  // Auto-warm full supermarket range when user selects a specific subcategory or aisle with sparse items
+  useEffect(() => {
+    if (initialLoading || activeTab !== 'search') return;
+    if (selectedCategory === 'All' && selectedSubCategory === 'All') return;
+    if (searchQuery.trim().length >= 2) return;
+
+    const warmKey = `search|${selectedStore}|${selectedCategory}|${selectedSubCategory}`;
+    if (autoWarmedKeysRef.current.has(warmKey)) return;
+
+    const matching = allItems.filter((item) => {
+      if (selectedStore !== 'all' && item.store !== selectedStore) return false;
+      if (selectedCategory !== 'All' && item.category !== selectedCategory) {
+        return false;
+      }
+      if (
+        selectedSubCategory !== 'All' &&
+        !matchesSubCategory(item, selectedSubCategory)
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    const regularCount = matching.filter(isSpecialItemRegularPrice).length;
+    if (matching.length < 20 || regularCount < 6) {
+      autoWarmedKeysRef.current.add(warmKey);
+      handleLoadMoreRange({
+        category: selectedCategory,
+        subCategory: selectedSubCategory,
+        store: selectedStore,
+        silent: true,
+      });
+    }
+  }, [
+    activeTab,
+    allItems,
+    handleLoadMoreRange,
+    initialLoading,
+    searchQuery,
+    selectedCategory,
+    selectedStore,
+    selectedSubCategory,
+  ]);
+
+  const matchesActiveDealFilter = useCallback(
+    (item: SpecialItem) => {
+      if (dealFilter === 'half_price') return isSpecialItemHalfPrice(item);
+      if (dealFilter === 'sale') return isSpecialItemOnSale(item);
+      if (dealFilter === 'regular') return isSpecialItemRegularPrice(item);
+      return true;
+    },
+    [dealFilter]
+  );
+
   const searchCounts = useMemo(() => {
-    const catPool = queryMatchedPool.filter((i) =>
-      selectedCategory === 'All' ? true : i.category === selectedCategory
-    );
+    const catPool = queryMatchedPool.filter((i) => {
+      if (selectedCategory !== 'All' && i.category !== selectedCategory) {
+        return false;
+      }
+      if (
+        selectedSubCategory !== 'All' &&
+        !matchesSubCategory(i, selectedSubCategory)
+      ) {
+        return false;
+      }
+      return true;
+    });
     const amazonCount = catPool.filter((i) => i.store === 'amazon').length;
     const storeScoped =
       selectedStore === 'all'
@@ -560,46 +732,66 @@ function MainApp() {
       ? storeScoped.filter((i) => i.inStock === true)
       : storeScoped;
 
-    const stockScoped = storeScoped.filter((i) => {
-      if (dealFilter === 'half_price') return isSpecialItemHalfPrice(i);
-      if (dealFilter === 'sale') return isSpecialItemOnSale(i);
+    const stockScoped = storeScoped.filter(matchesActiveDealFilter);
+
+    const aisleCounts: Record<string, number> = {};
+    const subCategoryCounts: Record<string, number> = {};
+
+    const baseFilteredPool = queryMatchedPool.filter((item) => {
+      if (selectedStore !== 'all' && item.store !== selectedStore) return false;
+      if (!matchesActiveDealFilter(item)) return false;
+      if (inStockOnly && item.inStock !== true) return false;
       return true;
     });
 
-    const aisleCounts: Record<string, number> = {};
-    for (const item of queryMatchedPool) {
-      if (selectedStore !== 'all' && item.store !== selectedStore) continue;
-      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) continue;
-      if (dealFilter === 'sale' && !isSpecialItemOnSale(item)) continue;
-      if (inStockOnly && item.inStock !== true) continue;
+    for (const item of baseFilteredPool) {
       aisleCounts[item.category] = (aisleCounts[item.category] || 0) + 1;
+    }
+
+    for (const subDef of SUBCATEGORY_FILTERS) {
+      let count = 0;
+      for (const item of baseFilteredPool) {
+        if (selectedCategory !== 'All' && item.category !== selectedCategory) {
+          continue;
+        }
+        if (matchesSubCategory(item, subDef.id)) {
+          count += 1;
+        }
+      }
+      subCategoryCounts[subDef.id] = count;
     }
 
     return {
       totalItemsCount: dealScoped.length,
+      regularItemsCount: dealScoped.filter(isSpecialItemRegularPrice).length,
       totalOnSaleCount: dealScoped.filter(isSpecialItemOnSale).length,
       totalHalfPriceCount: dealScoped.filter(isSpecialItemHalfPrice).length,
       inStockCount: stockScoped.filter((i) => i.inStock === true).length,
       amazonCount,
       aisleCounts,
+      subCategoryCounts,
     };
   }, [
     queryMatchedPool,
     selectedCategory,
+    selectedSubCategory,
     selectedStore,
-    dealFilter,
     inStockOnly,
+    matchesActiveDealFilter,
   ]);
 
   const filteredSearchItems = useMemo(() => {
     const matches = queryMatchedPool.filter((item) => {
       if (selectedStore !== 'all' && item.store !== selectedStore) return false;
-      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) {
-        return false;
-      }
-      if (dealFilter === 'sale' && !isSpecialItemOnSale(item)) return false;
+      if (!matchesActiveDealFilter(item)) return false;
       if (inStockOnly && item.inStock !== true) return false;
       if (selectedCategory !== 'All' && item.category !== selectedCategory) {
+        return false;
+      }
+      if (
+        selectedSubCategory !== 'All' &&
+        !matchesSubCategory(item, selectedSubCategory)
+      ) {
         return false;
       }
       return true;
@@ -631,9 +823,10 @@ function MainApp() {
   }, [
     queryMatchedPool,
     selectedStore,
-    dealFilter,
+    matchesActiveDealFilter,
     inStockOnly,
     selectedCategory,
+    selectedSubCategory,
     sortBy,
   ]);
 
@@ -763,6 +956,8 @@ function MainApp() {
                 onChangeBrowseDealFilter={setBrowseDealFilter}
                 browseInStockOnly={prefs.browseInStockOnly}
                 onToggleBrowseInStockOnly={toggleBrowseInStockOnly}
+                loadingMoreRange={loadingMoreRange}
+                onLoadMoreRange={handleLoadMoreRange}
                 onRefresh={handleSyncFromWeb}
                 onOpenLocation={() => setLocationModalOpen(true)}
                 onOpenSettings={() => setSettingsOpen(true)}
@@ -806,7 +1001,18 @@ function MainApp() {
                 inStockOnly={inStockOnly}
                 onToggleInStockOnly={toggleSearchInStockOnly}
                 selectedCategory={selectedCategory}
-                onCategoryChange={setSelectedCategory}
+                onCategoryChange={handleSearchCategoryChange}
+                selectedSubCategory={selectedSubCategory}
+                onSubCategoryChange={handleSearchSubCategoryChange}
+                loadingMoreRange={loadingMoreRange}
+                onLoadMoreRange={() =>
+                  handleLoadMoreRange({
+                    query: searchQuery,
+                    category: selectedCategory,
+                    subCategory: selectedSubCategory,
+                    store: selectedStore,
+                  })
+                }
                 sortBy={sortBy}
                 onSortChange={setSortBy}
                 counts={searchCounts}
@@ -840,6 +1046,8 @@ function MainApp() {
                 qtyMap={qtyMap}
                 isFavourite={prefs.favStores.includes(pushedStoreId)}
                 userLocation={userLocation}
+                loadingMoreRange={loadingMoreRange}
+                onLoadMoreRange={handleLoadMoreRange}
                 onClose={() => setPushedStoreId(null)}
                 onToggleFavourite={handleToggleFavStore}
                 onSelectProduct={setDetailItem}

@@ -15,8 +15,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS, STORE_THEMES } from '../theme/colors';
 import { DISCOVER_CATEGORIES } from '../theme/uiAssets';
 import {
+  getSubCategoriesForAisle,
+  getSubCategoryDef,
   isSpecialItemHalfPrice,
   isSpecialItemOnSale,
+  isSpecialItemRegularPrice,
+  POPULAR_SUBCATEGORY_FILTERS,
 } from '../services/normalizeClient';
 import {
   DealFilter,
@@ -45,15 +49,21 @@ interface SearchViewProps {
   onToggleInStockOnly: () => void;
   selectedCategory: string;
   onCategoryChange: (cat: string) => void;
+  selectedSubCategory: string;
+  onSubCategoryChange: (sub: string) => void;
+  loadingMoreRange?: boolean;
+  onLoadMoreRange?: () => void;
   sortBy: SortOption;
   onSortChange: (sort: SortOption) => void;
   counts: {
     totalItemsCount: number;
+    regularItemsCount: number;
     totalOnSaleCount: number;
     totalHalfPriceCount: number;
     inStockCount: number;
     amazonCount: number;
     aisleCounts?: Record<string, number>;
+    subCategoryCounts?: Record<string, number>;
   };
   onSelectProduct: (item: SpecialItem) => void;
   onIncrementItem: (item: SpecialItem) => void;
@@ -93,6 +103,10 @@ export const SearchView: React.FC<SearchViewProps> = ({
   onToggleInStockOnly,
   selectedCategory,
   onCategoryChange,
+  selectedSubCategory,
+  onSubCategoryChange,
+  loadingMoreRange = false,
+  onLoadMoreRange,
   sortBy,
   onSortChange,
   counts,
@@ -105,7 +119,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const [focused, setFocused] = useState(false);
 
   const hasActiveSearchOrCat =
-    searchQuery.trim().length > 0 || selectedCategory !== 'All';
+    searchQuery.trim().length > 0 ||
+    selectedCategory !== 'All' ||
+    selectedSubCategory !== 'All';
 
   const hasPersistedSubFilters =
     selectedStore !== 'all' || dealFilter !== 'all' || inStockOnly;
@@ -124,6 +140,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
       if (selectedStore !== 'all' && i.store !== selectedStore) continue;
       if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(i)) continue;
       if (dealFilter === 'sale' && !isSpecialItemOnSale(i)) continue;
+      if (dealFilter === 'regular' && !isSpecialItemRegularPrice(i)) continue;
       if (inStockOnly && i.inStock !== true) continue;
       map[i.category] = (map[i.category] || 0) + 1;
     }
@@ -140,6 +157,18 @@ export const SearchView: React.FC<SearchViewProps> = ({
     }
     return ['All', ...baseIds];
   }, [counts.aisleCounts, selectedCategory]);
+
+  const subCategoryOptions = useMemo(
+    () => getSubCategoriesForAisle(selectedCategory),
+    [selectedCategory]
+  );
+
+  const activeSubLabel = useMemo(() => {
+    if (selectedSubCategory === 'All') return '';
+    return (
+      getSubCategoryDef(selectedSubCategory)?.shortLabel || selectedSubCategory
+    );
+  }, [selectedSubCategory]);
 
   const categoryPairs = useMemo(() => {
     const pairs: Array<typeof DISCOVER_CATEGORIES> = [];
@@ -167,7 +196,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onSubmitEditing={() => onSubmitSearch(searchQuery)}
-            placeholder="Products, stores or categories (e.g. chips, milk)…"
+            placeholder="Search all supermarket items (snacks, meat, lollies, milk…)"
             placeholderTextColor={COLORS.muted}
             style={styles.input}
             returnKeyType="search"
@@ -224,6 +253,31 @@ export const SearchView: React.FC<SearchViewProps> = ({
             </View>
           )}
 
+          {/* Quick Product Type Filters (Snacks, Meat, Chocolate, Lollies, Fruit, etc.) */}
+          <View style={styles.sec}>
+            <Text style={styles.secHeading}>Browse by type</Text>
+            <View style={styles.quickTypeWrap}>
+              {POPULAR_SUBCATEGORY_FILTERS.map((sub) => {
+                const subCount = counts.subCategoryCounts?.[sub.id] ?? 0;
+                return (
+                  <Pressable
+                    key={sub.id}
+                    onPress={() => onSubCategoryChange(sub.id)}
+                    style={({ pressed }) => [
+                      styles.quickTypeChip,
+                      pressed && { opacity: 0.78, transform: [{ scale: 0.97 }] },
+                    ]}
+                  >
+                    <Text style={styles.quickTypeText}>{sub.shortLabel}</Text>
+                    {subCount > 0 && (
+                      <Text style={styles.quickTypeCount}>{subCount}</Text>
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
           {/* Trending This Week */}
           {trendingItems.length > 0 && (
             <View style={styles.sec}>
@@ -246,7 +300,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
           <View style={styles.sec}>
             <View style={styles.secHeaderRow}>
               <Text style={[styles.secHeading, { marginBottom: 0 }]}>
-                Browse categories
+                Browse aisles
               </Text>
               {hasPersistedSubFilters && (
                 <Pressable
@@ -307,13 +361,23 @@ export const SearchView: React.FC<SearchViewProps> = ({
           columnWrapperStyle={styles.gridRow}
           ListHeaderComponent={
             <View style={styles.filtersWrap}>
-              {selectedCategory !== 'All' && (
+              {(selectedCategory !== 'All' ||
+                selectedSubCategory !== 'All') && (
                 <View style={styles.activeCatBanner}>
-                  <Text style={styles.activeCatText}>
-                    Aisle: {selectedCategory}
+                  <Text style={styles.activeCatText} numberOfLines={1}>
+                    {selectedCategory !== 'All' && selectedSubCategory !== 'All'
+                      ? `${selectedCategory} · ${activeSubLabel}`
+                      : selectedSubCategory !== 'All'
+                      ? `Type: ${activeSubLabel}`
+                      : `Aisle: ${selectedCategory}`}
                   </Text>
-                  <Pressable onPress={() => onCategoryChange('All')}>
-                    <Text style={styles.clearCatText}>Clear aisle</Text>
+                  <Pressable
+                    onPress={() => {
+                      onCategoryChange('All');
+                      onSubCategoryChange('All');
+                    }}
+                  >
+                    <Text style={styles.clearCatText}>Clear</Text>
                   </Pressable>
                 </View>
               )}
@@ -364,6 +428,68 @@ export const SearchView: React.FC<SearchViewProps> = ({
                   );
                 })}
               </ScrollView>
+
+              {/* Subcategory / Product Type Chips */}
+              {subCategoryOptions.length > 0 && (
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.chipsScroll}
+                >
+                  <Pressable
+                    onPress={() => onSubCategoryChange('All')}
+                    style={[
+                      styles.subChip,
+                      selectedSubCategory === 'All' && styles.subChipActive,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.subChipText,
+                        selectedSubCategory === 'All' &&
+                          styles.subChipTextActive,
+                      ]}
+                    >
+                      All types
+                    </Text>
+                  </Pressable>
+
+                  {subCategoryOptions.map((sub) => {
+                    const active = selectedSubCategory === sub.id;
+                    const sCount = counts.subCategoryCounts?.[sub.id] ?? 0;
+                    if (
+                      !active &&
+                      searchQuery.trim().length > 0 &&
+                      sCount === 0
+                    ) {
+                      return null;
+                    }
+                    return (
+                      <Pressable
+                        key={sub.id}
+                        onPress={() =>
+                          onSubCategoryChange(active ? 'All' : sub.id)
+                        }
+                        style={[
+                          styles.subChip,
+                          active && styles.subChipActive,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.subChipText,
+                            active && styles.subChipTextActive,
+                          ]}
+                        >
+                          {sCount > 0 || searchQuery.trim().length > 0
+                            ? `${sub.shortLabel} (${sCount})`
+                            : sub.shortLabel}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              )}
 
               {/* Deal & Stock Chips */}
               <ScrollView
@@ -430,6 +556,27 @@ export const SearchView: React.FC<SearchViewProps> = ({
                     ]}
                   >
                     ½ price ({counts.totalHalfPriceCount})
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  onPress={() =>
+                    onDealFilterChange(
+                      dealFilter === 'regular' ? 'all' : 'regular'
+                    )
+                  }
+                  style={[
+                    styles.chip,
+                    dealFilter === 'regular' && styles.chipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.chipText,
+                      dealFilter === 'regular' && styles.chipTextActive,
+                    ]}
+                  >
+                    Regular price ({counts.regularItemsCount})
                   </Text>
                 </Pressable>
 
@@ -519,34 +666,92 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 })}
               </ScrollView>
 
-              {liveSearching && (
+              {(liveSearching || loadingMoreRange) && (
                 <Text style={styles.searchingHint}>
-                  Searching live range across Woolworths, Coles, ALDI, IGA & Amazon AU…
+                  {liveSearching
+                    ? 'Searching live range across Woolworths, Coles, ALDI, IGA & Amazon AU…'
+                    : 'Loading more supermarket items from Woolworths, Coles, ALDI & IGA…'}
                 </Text>
               )}
             </View>
           }
+          ListFooterComponent={
+            filteredItems.length > 0 && onLoadMoreRange ? (
+              <View style={styles.footerMoreWrap}>
+                <Text style={styles.footerCountText}>
+                  Showing {filteredItems.length} items
+                </Text>
+                <Pressable
+                  onPress={onLoadMoreRange}
+                  disabled={loadingMoreRange}
+                  style={({ pressed }) => [
+                    styles.loadMoreBtn,
+                    pressed && { opacity: 0.85 },
+                    loadingMoreRange && { opacity: 0.7 },
+                  ]}
+                >
+                  {loadingMoreRange ? (
+                    <ActivityIndicator size="small" color={COLORS.blue} />
+                  ) : (
+                    <Ionicons
+                      name="add-circle-outline"
+                      size={17}
+                      color={COLORS.blue}
+                    />
+                  )}
+                  <Text style={styles.loadMoreBtnText}>
+                    {loadingMoreRange
+                      ? 'Loading more from supermarkets…'
+                      : 'Load more from supermarkets'}
+                  </Text>
+                </Pressable>
+              </View>
+            ) : undefined
+          }
           ListEmptyComponent={
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyTitle}>
-                {liveSearching
-                  ? `Searching "${searchQuery}"…`
-                  : `No items for "${searchQuery || selectedCategory}"`}
+                {liveSearching || loadingMoreRange
+                  ? 'Fetching items from supermarkets…'
+                  : `No items for "${
+                      searchQuery ||
+                      activeSubLabel ||
+                      selectedCategory
+                    }"`}
               </Text>
               <Text style={styles.emptySub}>
-                Try clearing a filter or searching another product name.
+                Try loading more range from supermarkets or clearing an active filter.
               </Text>
-              <Pressable
-                onPress={() => {
-                  onStoreChange('all');
-                  onDealFilterChange('all');
-                  if (inStockOnly) onToggleInStockOnly();
-                  onCategoryChange('All');
-                }}
-                style={styles.resetBtn}
-              >
-                <Text style={styles.resetBtnText}>Reset filters</Text>
-              </Pressable>
+              <View style={styles.emptyActionsRow}>
+                {onLoadMoreRange && (
+                  <Pressable
+                    onPress={onLoadMoreRange}
+                    disabled={loadingMoreRange}
+                    style={styles.loadMoreBtn}
+                  >
+                    {loadingMoreRange && (
+                      <ActivityIndicator size="small" color={COLORS.blue} />
+                    )}
+                    <Text style={styles.loadMoreBtnText}>
+                      {loadingMoreRange
+                        ? 'Loading…'
+                        : 'Load from supermarkets'}
+                    </Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  onPress={() => {
+                    onStoreChange('all');
+                    onDealFilterChange('all');
+                    if (inStockOnly) onToggleInStockOnly();
+                    onCategoryChange('All');
+                    onSubCategoryChange('All');
+                  }}
+                  style={styles.resetBtn}
+                >
+                  <Text style={styles.resetBtnText}>Reset filters</Text>
+                </Pressable>
+              </View>
             </View>
           }
           renderItem={({ item }) => (
@@ -655,6 +860,32 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.ink2,
   },
+  quickTypeWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+  },
+  quickTypeChip: {
+    height: 36,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    backgroundColor: COLORS.blueSoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  quickTypeText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: COLORS.blueDark,
+  },
+  quickTypeCount: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: COLORS.blue,
+    opacity: 0.85,
+  },
   trendingList: {
     paddingHorizontal: 16,
   },
@@ -751,6 +982,26 @@ const styles = StyleSheet.create({
   chipTextActive: {
     color: '#FFFFFF',
   },
+  subChip: {
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#EEF2FF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  subChipActive: {
+    backgroundColor: COLORS.blueDark,
+  },
+  subChipText: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: COLORS.blueDark,
+  },
+  subChipTextActive: {
+    color: '#FFFFFF',
+  },
   divider: {
     width: 1,
     height: 20,
@@ -771,6 +1022,32 @@ const styles = StyleSheet.create({
   cardCell: {
     flex: 1,
   },
+  footerMoreWrap: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    gap: 10,
+  },
+  footerCountText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.muted,
+  },
+  loadMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: COLORS.blueSoft,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 999,
+  },
+  loadMoreBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: COLORS.blueDark,
+  },
   emptyWrap: {
     alignItems: 'center',
     paddingVertical: 56,
@@ -789,16 +1066,23 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     textAlign: 'center',
   },
-  resetBtn: {
+  emptyActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
     marginTop: 8,
-    backgroundColor: COLORS.blueSoft,
+  },
+  resetBtn: {
+    backgroundColor: COLORS.surfaceAlt,
     paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingVertical: 11,
     borderRadius: 999,
   },
   resetBtnText: {
     fontSize: 14,
     fontWeight: '800',
-    color: COLORS.blueDark,
+    color: COLORS.ink2,
   },
 });

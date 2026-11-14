@@ -49,7 +49,8 @@ export const SpecialCard: React.FC<SpecialCardProps> = React.memo(
         : 'Sale'
       : null;
 
-    const subDetail = item.packageSize || item.unitPrice || item.category;
+    const subDetail =
+      item.packageSize || item.unitPrice || item.subCategory || item.category;
 
     return (
       <Pressable

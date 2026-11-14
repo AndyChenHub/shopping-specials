@@ -1,4 +1,10 @@
-import { classifyCategory, computeSavings, cleanText, parseMoney } from '../normalize.js';
+import {
+  classifyCategory,
+  classifySubCategory,
+  computeSavings,
+  cleanText,
+  parseMoney,
+} from '../normalize.js';
 
 const USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -90,9 +96,10 @@ function buildConciseFallbackQuery(fullQuery, packageSize) {
     : head;
 }
 
-export async function searchWoolworthsProducts(query, limit = 16, locationCtx = {}) {
+export async function searchWoolworthsProducts(query, limit = 24, locationCtx = {}, page = 1) {
+  const safePage = Math.max(1, Math.floor(page || 1));
   const pageSize = Math.min(Math.max(limit, 20), 36);
-  const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(query)}&pageSize=${pageSize}`;
+  const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(query)}&pageNumber=${safePage}&pageSize=${pageSize}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
@@ -153,6 +160,9 @@ export async function searchWoolworthsProducts(query, limit = 16, locationCtx = 
         .filter(Boolean)
         .join(' ');
 
+      const category = classifyCategory(wwCatHint, title, 'woolworths');
+      const subCategory = classifySubCategory(wwCatHint, title, category);
+
       out.push({
         id: `woolworths-sku-${p.Stockcode || title}`,
         store: 'woolworths',
@@ -171,7 +181,8 @@ export async function searchWoolworthsProducts(query, limit = 16, locationCtx = 
         isHalfPrice,
         promoText,
         unitPrice: p.CupString ? cleanText(p.CupString) : null,
-        category: classifyCategory(wwCatHint, title, 'woolworths'),
+        category,
+        subCategory,
         imageUrl: p.LargeImageFile || p.MediumImageFile || null,
         productUrl: p.Stockcode
           ? `https://www.woolworths.com.au/shop/productdetails/${p.Stockcode}/${p.UrlFriendlyName || ''}`
@@ -189,8 +200,15 @@ export async function searchWoolworthsProducts(query, limit = 16, locationCtx = 
   return out;
 }
 
-export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
-  const searchUrl = `https://www.coles.com.au/search/products?q=${encodeURIComponent(query)}`;
+export async function searchColesProducts(query, limit = 48, locationCtx = {}, page = 1) {
+  if (page > 1) return [];
+  const rawQuery = String(query || '');
+  const isBrowse = rawQuery.startsWith('browse:');
+  const browseSlug = isBrowse ? rawQuery.slice(7).trim() : '';
+  const searchUrl = isBrowse
+    ? `https://www.coles.com.au/browse/${encodeURIComponent(browseSlug)}`
+    : `https://www.coles.com.au/search/products?q=${encodeURIComponent(rawQuery)}`;
+
   const res = await fetch(searchUrl, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en-AU,en;q=0.9' },
     signal: AbortSignal.timeout(10000),
@@ -199,9 +217,14 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
   const html = await res.text();
 
   const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
-  if (!nextMatch) return [];
+  if (!nextMatch || !nextMatch[1]?.trim()) return [];
 
-  const nextJson = JSON.parse(nextMatch[1]);
+  let nextJson;
+  try {
+    nextJson = JSON.parse(nextMatch[1]);
+  } catch {
+    return [];
+  }
   const rawResults = nextJson?.props?.pageProps?.searchResults?.results || [];
 
   const out = [];
@@ -273,6 +296,9 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
       .filter(Boolean)
       .join(' ');
 
+    const category = classifyCategory(colesCatHint, fullTitle, 'coles');
+    const subCategory = classifySubCategory(colesCatHint, fullTitle, category);
+
     out.push({
       id: `coles-sku-${r.id || slug}`,
       store: 'coles',
@@ -290,7 +316,8 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: r.pricing.comparable ? cleanText(r.pricing.comparable) : null,
-      category: classifyCategory(colesCatHint, fullTitle, 'coles'),
+      category,
+      subCategory,
       imageUrl: imgUri ? `https://productimages.coles.com.au/productimages${imgUri}` : null,
       productUrl: r.id ? `https://www.coles.com.au/product/${slug}-${r.id}` : searchUrl,
       catalogueName: isOnSale ? 'Coles Specials' : 'Coles Everyday Range',
@@ -305,14 +332,29 @@ export async function searchColesProducts(query, limit = 10, locationCtx = {}) {
   return out;
 }
 
-export async function searchAldiProducts(query, limit = 12, locationCtx = {}) {
-  const validLimit = limit <= 12 ? 12 : limit <= 16 ? 16 : 24;
+export async function searchAldiProducts(query, limit = 24, locationCtx = {}, page = 1) {
+  const validLimit =
+    limit <= 12
+      ? 12
+      : limit <= 16
+      ? 16
+      : limit <= 24
+      ? 24
+      : limit <= 30
+      ? 30
+      : limit <= 32
+      ? 32
+      : limit <= 48
+      ? 48
+      : 60;
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const offset = (safePage - 1) * validLimit;
   const qs = new URLSearchParams({
     currency: 'AUD',
     serviceType: 'walk-in',
     q: query,
     limit: String(validLimit),
-    offset: '0',
+    offset: String(offset),
     sort: 'relevance',
   });
   if (locationCtx?.aldiStoreId) {
@@ -380,6 +422,10 @@ export async function searchAldiProducts(query, limit = 12, locationCtx = {}) {
       ? `In Range • ${aldiStoreName}`
       : 'In-Store Range';
 
+    const catNames = (item.categories || []).map((c) => c.name).join(' ');
+    const category = classifyCategory(catNames, fullTitle, 'aldi');
+    const subCategory = classifySubCategory(catNames, fullTitle, category);
+
     out.push({
       id: `aldi-${item.sku || slug}`,
       store: 'aldi',
@@ -397,7 +443,8 @@ export async function searchAldiProducts(query, limit = 12, locationCtx = {}) {
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: cleanText(item.price.comparisonDisplay || item.price.perUnitDisplay || '') || null,
-      category: classifyCategory((item.categories || []).map((c) => c.name).join(' '), fullTitle, 'aldi'),
+      category,
+      subCategory,
       imageUrl: front?.url ? String(front.url).replace('{width}', '500').replace('{slug}', `${slug}.jpg`) : null,
       productUrl: item.urlSlugText
         ? `https://www.aldi.com.au/product/${item.urlSlugText}-${item.sku}`
@@ -414,10 +461,12 @@ export async function searchAldiProducts(query, limit = 12, locationCtx = {}) {
   return out;
 }
 
-export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
+export async function searchIgaProducts(query, limit = 20, locationCtx = {}, page = 1) {
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const skip = (safePage - 1) * limit;
   const activeStoreId = locationCtx?.igaStoreId || IGA_STORE_ID;
   const localStoreName = locationCtx?.igaStoreName || null;
-  const url = `https://www.igashop.com.au/api/storefront/stores/${encodeURIComponent(activeStoreId)}/search?q=${encodeURIComponent(query)}&take=${limit}`;
+  const url = `https://www.igashop.com.au/api/storefront/stores/${encodeURIComponent(activeStoreId)}/search?q=${encodeURIComponent(query)}&take=${limit}&skip=${skip}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
@@ -483,6 +532,9 @@ export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
           .join(' ')
       : '';
 
+    const category = classifyCategory(igaCatHint, fullTitle, 'iga');
+    const subCategory = classifySubCategory(igaCatHint, fullTitle, category);
+
     out.push({
       id: `iga-${activeStoreId}-${item.productId || item.sku || fullTitle}`,
       store: 'iga',
@@ -500,7 +552,8 @@ export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: item.pricePerUnit ? cleanText(item.pricePerUnit) : null,
-      category: classifyCategory(igaCatHint, fullTitle, 'iga'),
+      category,
+      subCategory,
       imageUrl: item.image?.default || item.image?.cell || null,
       productUrl: `https://www.igashop.com.au/search?q=${encodeURIComponent(fullTitle)}`,
       catalogueName: localStoreName || (isOnSale ? 'IGA Specials' : 'IGA Everyday Range'),
@@ -514,8 +567,17 @@ export async function searchIgaProducts(query, limit = 10, locationCtx = {}) {
   return out;
 }
 
-export async function searchAmazonAuProducts(query, limit = 8) {
-  const searchUrl = `https://www.amazon.com.au/s?k=${encodeURIComponent(query)}`;
+export async function searchAmazonAuProducts(
+  query,
+  limit = 10,
+  _locationCtx = {},
+  page = 1
+) {
+  const rawPage = Number(page);
+  const safePage = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+  const searchUrl = `https://www.amazon.com.au/s?k=${encodeURIComponent(query)}${
+    safePage > 1 ? `&page=${safePage}` : ''
+  }`;
   const res = await fetch(searchUrl, {
     headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en-AU,en;q=0.9' },
     signal: AbortSignal.timeout(10000),
@@ -557,6 +619,9 @@ export async function searchAmazonAuProducts(query, limit = 8) {
       null;
     const unitMatch = block.match(/\((\$[\d,.]+\s*\/\s*(?:\d+\s*)?[a-zA-Z]+)\)/);
 
+    const category = classifyCategory('', title, 'amazon');
+    const subCategory = classifySubCategory('', title, category);
+
     out.push({
       id: `amazon-${asin}`,
       store: 'amazon',
@@ -576,7 +641,8 @@ export async function searchAmazonAuProducts(query, limit = 8) {
           ? `Save $${savings.saveAmount.toFixed(2)}`
           : null,
       unitPrice: unitMatch ? unitMatch[1] : null,
-      category: classifyCategory('', title, 'amazon'),
+      category,
+      subCategory,
       imageUrl: img,
       productUrl: `https://www.amazon.com.au/dp/${asin}`,
       catalogueName: 'Amazon.com.au',

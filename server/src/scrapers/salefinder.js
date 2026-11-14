@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 import {
   classifyCategory,
+  classifySubCategory,
   computeSavings,
   cleanText,
   extractSaleFinderUrlHint,
@@ -198,6 +199,7 @@ function parseSaleFinderListPage(html, { store, storeName, catalogue }) {
 
     const urlHint = extractUrlCategoryHint(itemHref);
     const category = classifyCategory(urlHint, fullTitle, store);
+    const subCategory = classifySubCategory(urlHint, fullTitle, category);
 
     const productUrl = itemHref
       ? itemHref.startsWith('http')
@@ -222,6 +224,7 @@ function parseSaleFinderListPage(html, { store, storeName, catalogue }) {
       promoText,
       unitPrice,
       category,
+      subCategory,
       imageUrl: imageUrl ? imageUrl.replace(/^\/\//, 'https://') : null,
       productUrl,
       catalogueName: catalogue.name,

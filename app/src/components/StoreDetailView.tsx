@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   FlatList,
   Image,
   NativeScrollEvent,
@@ -19,13 +20,18 @@ import {
 } from '../theme/uiAssets';
 import {
   CLIENT_CATEGORIES,
+  getSubCategoriesForAisle,
+  getSubCategoryDef,
   isSpecialItemHalfPrice,
   isSpecialItemOnSale,
+  isSpecialItemRegularPrice,
+  matchesSubCategory,
 } from '../services/normalizeClient';
 import {
   CatalogueInfo,
   DealFilter,
   SpecialItem,
+  StoreFilter,
   StoreId,
   UserStoreLocation,
 } from '../types/specials';
@@ -39,6 +45,14 @@ interface StoreDetailViewProps {
   qtyMap: Record<string, number>;
   isFavourite: boolean;
   userLocation: UserStoreLocation | null;
+  loadingMoreRange?: boolean;
+  onLoadMoreRange?: (params: {
+    query?: string;
+    category?: string;
+    subCategory?: string;
+    store?: StoreFilter;
+    silent?: boolean;
+  }) => void;
   onClose: () => void;
   onToggleFavourite: (storeId: StoreId) => void;
   onSelectProduct: (item: SpecialItem) => void;
@@ -54,6 +68,8 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
   qtyMap,
   isFavourite,
   userLocation,
+  loadingMoreRange = false,
+  onLoadMoreRange,
   onClose,
   onToggleFavourite,
   onSelectProduct,
@@ -66,75 +82,138 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
 
   const [solidNav, setSolidNav] = useState(false);
   const [selectedCat, setSelectedCat] = useState<string>('all');
+  const [selectedSubCat, setSelectedSubCat] = useState<string>('All');
   const [dealFilter, setDealFilter] = useState<DealFilter>('all');
   const [inStockOnly, setInStockOnly] = useState<boolean>(false);
+  const autoWarmedRef = useRef<Set<string>>(new Set());
 
   const theme = STORE_THEMES[storeId];
+  const storeBtnLabel = storeId === 'iga' ? 'IGA' : theme.name;
   const meta = resolveLocalStoreMeta(storeId, userLocation);
   const { timeLeft } = getCatalogueResetInfo();
+
+  const handleSelectCat = (nextCat: string) => {
+    setSelectedCat(nextCat);
+    if (nextCat !== 'all' && selectedSubCat !== 'All') {
+      const def = getSubCategoryDef(selectedSubCat);
+      if (!def || def.parentCategory !== nextCat) {
+        setSelectedSubCat('All');
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!onLoadMoreRange) return;
+    if (selectedCat === 'all' && selectedSubCat === 'All') return;
+    const warmKey = `${storeId}::${selectedCat}::${selectedSubCat}`;
+    if (autoWarmedRef.current.has(warmKey)) return;
+    const matching = items.filter((i) => {
+      if (selectedCat !== 'all' && i.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(i, selectedSubCat)) {
+        return false;
+      }
+      return true;
+    });
+    if (matching.length < 14) {
+      autoWarmedRef.current.add(warmKey);
+      onLoadMoreRange({
+        store: storeId,
+        category: selectedCat === 'all' ? 'All' : selectedCat,
+        subCategory: selectedSubCat,
+        silent: true,
+      });
+    }
+  }, [items, onLoadMoreRange, selectedCat, selectedSubCat, storeId]);
 
   const specialsList = useMemo(
     () => items.filter(isSpecialItemOnSale),
     [items]
   );
 
-  const totalSaveDollars = useMemo(
-    () =>
-      specialsList.reduce(
-        (sum, d) =>
-          sum +
-          (d.saveAmount ?? (d.wasPrice && d.wasPrice > d.price ? d.wasPrice - d.price : 0)),
-        0
-      ),
-    [specialsList]
-  );
-
   const availableCats = useMemo(() => {
-    const set = new Set<string>();
+    const ordered: string[] = [...CLIENT_CATEGORIES];
     for (const i of items) {
-      if (i.category) set.add(i.category);
-    }
-    const ordered = CLIENT_CATEGORIES.filter((c) => set.has(c));
-    for (const c of set) {
-      if (!ordered.includes(c)) ordered.push(c);
+      if (i.category && !ordered.includes(i.category)) {
+        ordered.push(i.category);
+      }
     }
     return ['all', ...ordered];
   }, [items]);
 
+  const subCategoryOptions = useMemo(
+    () => getSubCategoriesForAisle(selectedCat === 'all' ? 'All' : selectedCat),
+    [selectedCat]
+  );
+
+  const subCatCounts = useMemo(() => {
+    const base = items.filter((i) => {
+      if (selectedCat !== 'all' && i.category !== selectedCat) return false;
+      if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(i)) {
+        return false;
+      }
+      if (dealFilter === 'sale' && !isSpecialItemOnSale(i)) return false;
+      if (dealFilter === 'regular' && !isSpecialItemRegularPrice(i)) {
+        return false;
+      }
+      if (inStockOnly && i.inStock !== true) return false;
+      return true;
+    });
+    const map: Record<string, number> = {};
+    for (const sub of subCategoryOptions) {
+      let c = 0;
+      for (const item of base) {
+        if (matchesSubCategory(item, sub.id)) c += 1;
+      }
+      map[sub.id] = c;
+    }
+    return map;
+  }, [items, selectedCat, dealFilter, inStockOnly, subCategoryOptions]);
+
   const chipCounts = useMemo(() => {
-    const catPool =
-      selectedCat === 'all'
-        ? items
-        : items.filter((i) => i.category === selectedCat);
+    const catPool = items.filter((i) => {
+      if (selectedCat !== 'all' && i.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(i, selectedSubCat)) {
+        return false;
+      }
+      return true;
+    });
     const dealScoped = inStockOnly
       ? catPool.filter((i) => i.inStock === true)
       : catPool;
     const stockScoped = catPool.filter((i) => {
       if (dealFilter === 'half_price') return isSpecialItemHalfPrice(i);
       if (dealFilter === 'sale') return isSpecialItemOnSale(i);
+      if (dealFilter === 'regular') return isSpecialItemRegularPrice(i);
       return true;
     });
     return {
       allCount: dealScoped.length,
+      regularCount: dealScoped.filter(isSpecialItemRegularPrice).length,
       saleCount: dealScoped.filter(isSpecialItemOnSale).length,
       halfCount: dealScoped.filter(isSpecialItemHalfPrice).length,
       inStockCount: stockScoped.filter((i) => i.inStock === true).length,
     };
-  }, [items, selectedCat, dealFilter, inStockOnly]);
+  }, [items, selectedCat, selectedSubCat, dealFilter, inStockOnly]);
 
   const filtered = useMemo(() => {
     return items.filter((i) => {
       if (selectedCat !== 'all' && i.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(i, selectedSubCat)) {
+        return false;
+      }
       if (dealFilter === 'half_price' && !isSpecialItemHalfPrice(i)) {
         return false;
       }
       if (dealFilter === 'sale' && !isSpecialItemOnSale(i)) {
         return false;
       }
+      if (dealFilter === 'regular' && !isSpecialItemRegularPrice(i)) {
+        return false;
+      }
       if (inStockOnly && i.inStock !== true) return false;
       return true;
     });
-  }, [items, selectedCat, dealFilter, inStockOnly]);
+  }, [items, selectedCat, selectedSubCat, dealFilter, inStockOnly]);
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const isSolid = e.nativeEvent.contentOffset.y > 140;
@@ -214,14 +293,12 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
 
               <View style={styles.statsGrid}>
                 <View style={styles.statCard}>
-                  <Text style={styles.statNum}>{specialsList.length}</Text>
-                  <Text style={styles.statLabel}>Specials</Text>
+                  <Text style={styles.statNum}>{items.length}</Text>
+                  <Text style={styles.statLabel}>Total items</Text>
                 </View>
                 <View style={styles.statCard}>
-                  <Text style={styles.statNum}>
-                    ${Math.round(totalSaveDollars)}
-                  </Text>
-                  <Text style={styles.statLabel}>Total savings</Text>
+                  <Text style={styles.statNum}>{specialsList.length}</Text>
+                  <Text style={styles.statLabel}>On special</Text>
                 </View>
                 <View style={styles.statCard}>
                   <Text style={[styles.statNum, { color: COLORS.hot }]}>
@@ -293,6 +370,24 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                 </Text>
               </Pressable>
               <Pressable
+                onPress={() =>
+                  setDealFilter(dealFilter === 'regular' ? 'all' : 'regular')
+                }
+                style={[
+                  styles.modeChip,
+                  dealFilter === 'regular' && styles.modeChipActive,
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.modeChipText,
+                    dealFilter === 'regular' && styles.modeChipTextActive,
+                  ]}
+                >
+                  Regular ({chipCounts.regularCount})
+                </Text>
+              </Pressable>
+              <Pressable
                 onPress={() => setInStockOnly((v) => !v)}
                 style={[
                   styles.modeChip,
@@ -321,7 +416,7 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                 return (
                   <Pressable
                     key={c}
-                    onPress={() => setSelectedCat(c)}
+                    onPress={() => handleSelectCat(c)}
                     style={[styles.catTab, active && styles.catTabActive]}
                   >
                     <Text
@@ -336,24 +431,148 @@ export const StoreDetailView: React.FC<StoreDetailViewProps> = ({
                 );
               })}
             </ScrollView>
+
+            {/* Subcategory / Product Type Chips */}
+            {subCategoryOptions.length > 0 && (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.subTabsRow}
+              >
+                <Pressable
+                  onPress={() => setSelectedSubCat('All')}
+                  style={[
+                    styles.subChip,
+                    selectedSubCat === 'All' && styles.subChipActive,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.subChipText,
+                      selectedSubCat === 'All' && styles.subChipTextActive,
+                    ]}
+                  >
+                    All types
+                  </Text>
+                </Pressable>
+                {subCategoryOptions.map((sub) => {
+                  const active = selectedSubCat === sub.id;
+                  const sCount = subCatCounts[sub.id] ?? 0;
+                  return (
+                    <Pressable
+                      key={sub.id}
+                      onPress={() =>
+                        setSelectedSubCat(active ? 'All' : sub.id)
+                      }
+                      style={[styles.subChip, active && styles.subChipActive]}
+                    >
+                      <Text
+                        style={[
+                          styles.subChipText,
+                          active && styles.subChipTextActive,
+                        ]}
+                      >
+                        {sCount > 0
+                          ? `${sub.shortLabel} (${sCount})`
+                          : sub.shortLabel}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            {loadingMoreRange && (
+              <Text style={styles.loadingHint}>
+                Loading more {storeBtnLabel} items…
+              </Text>
+            )}
           </View>
+        }
+        ListFooterComponent={
+          filtered.length > 0 && onLoadMoreRange ? (
+            <View style={styles.footerMoreWrap}>
+              <Text style={styles.footerCountText}>
+                Showing {filtered.length} items
+              </Text>
+              <Pressable
+                onPress={() =>
+                  onLoadMoreRange({
+                    store: storeId,
+                    category: selectedCat === 'all' ? 'All' : selectedCat,
+                    subCategory: selectedSubCat,
+                  })
+                }
+                disabled={loadingMoreRange}
+                style={({ pressed }) => [
+                  styles.loadMoreBtn,
+                  pressed && { opacity: 0.85 },
+                  loadingMoreRange && { opacity: 0.7 },
+                ]}
+              >
+                {loadingMoreRange ? (
+                  <ActivityIndicator size="small" color={COLORS.blue} />
+                ) : (
+                  <Ionicons
+                    name="add-circle-outline"
+                    size={17}
+                    color={COLORS.blue}
+                  />
+                )}
+                <Text style={styles.loadMoreBtnText}>
+                  {loadingMoreRange
+                    ? `Loading more ${storeBtnLabel} items…`
+                    : `Load more ${storeBtnLabel} items`}
+                </Text>
+              </Pressable>
+            </View>
+          ) : undefined
         }
         ListEmptyComponent={
           <View style={styles.emptyStoreBox}>
-            <Text style={styles.emptyStoreTitle}>No matching items</Text>
-            <Text style={styles.emptyStoreSub}>
-              Try clearing an aisle, deal or stock filter to view more products.
+            <Text style={styles.emptyStoreTitle}>
+              {loadingMoreRange
+                ? `Fetching ${storeBtnLabel} items…`
+                : 'No matching items'}
             </Text>
-            <Pressable
-              onPress={() => {
-                setSelectedCat('all');
-                setDealFilter('all');
-                setInStockOnly(false);
-              }}
-              style={styles.resetStoreBtn}
-            >
-              <Text style={styles.resetStoreBtnText}>Reset filters</Text>
-            </Pressable>
+            <Text style={styles.emptyStoreSub}>
+              Try loading more range from {storeBtnLabel} or clearing an active filter.
+            </Text>
+            <View style={styles.emptyActionsRow}>
+              {onLoadMoreRange && (
+                <Pressable
+                  onPress={() =>
+                    onLoadMoreRange({
+                      store: storeId,
+                      category: selectedCat === 'all' ? 'All' : selectedCat,
+                      subCategory: selectedSubCat,
+                    })
+                  }
+                  disabled={loadingMoreRange}
+                  style={styles.loadMoreBtn}
+                >
+                  {loadingMoreRange && (
+                    <ActivityIndicator size="small" color={COLORS.blue} />
+                  )}
+                  <Text style={styles.loadMoreBtnText}>
+                    {loadingMoreRange
+                      ? 'Loading…'
+                      : `Load from ${storeBtnLabel}`}
+                  </Text>
+                </Pressable>
+              )}
+              <Pressable
+                onPress={() => {
+                  setSelectedCat('all');
+                  setSelectedSubCat('All');
+                  setDealFilter('all');
+                  setInStockOnly(false);
+                }}
+                style={styles.resetStoreBtn}
+              >
+                <Text style={styles.resetStoreBtnText}>Reset filters</Text>
+              </Pressable>
+            </View>
           </View>
         }
         renderItem={({ item }) => (
@@ -539,11 +758,9 @@ const styles = StyleSheet.create({
   },
   catTabsRow: {
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: 12,
+    paddingBottom: 8,
     gap: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.line,
-    marginBottom: 16,
   },
   catTab: {
     height: 36,
@@ -563,6 +780,40 @@ const styles = StyleSheet.create({
   catTabTextActive: {
     color: COLORS.blueDark,
   },
+  subTabsRow: {
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 7,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.line,
+    marginBottom: 14,
+  },
+  subChip: {
+    height: 32,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#EEF2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subChipActive: {
+    backgroundColor: COLORS.blueDark,
+  },
+  subChipText: {
+    fontSize: 12.5,
+    fontWeight: '800',
+    color: COLORS.blueDark,
+  },
+  subChipTextActive: {
+    color: '#FFFFFF',
+  },
+  loadingHint: {
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: COLORS.blue,
+  },
   gridRow: {
     paddingHorizontal: 16,
     gap: 12,
@@ -570,6 +821,32 @@ const styles = StyleSheet.create({
   },
   cardCell: {
     flex: 1,
+  },
+  footerMoreWrap: {
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 24,
+    paddingHorizontal: 24,
+    gap: 10,
+  },
+  footerCountText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.muted,
+  },
+  loadMoreBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: COLORS.blueSoft,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 999,
+  },
+  loadMoreBtnText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: COLORS.blueDark,
   },
   emptyStoreBox: {
     alignItems: 'center',
@@ -589,16 +866,23 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     textAlign: 'center',
   },
-  resetStoreBtn: {
+  emptyActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
     marginTop: 6,
-    backgroundColor: COLORS.blueSoft,
+  },
+  resetStoreBtn: {
+    backgroundColor: COLORS.surfaceAlt,
     paddingHorizontal: 18,
-    paddingVertical: 10,
+    paddingVertical: 11,
     borderRadius: 999,
   },
   resetStoreBtnText: {
     fontSize: 13.5,
     fontWeight: '800',
-    color: COLORS.blueDark,
+    color: COLORS.ink2,
   },
 });

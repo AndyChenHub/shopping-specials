@@ -2,12 +2,15 @@ import {
   CompetitorQuote,
   LocationSearchContext,
   SpecialItem,
+  StoreFilter,
   StoreId,
 } from '../types/specials';
 import {
   classifyCategory,
+  classifySubCategory,
   computeSavings,
   decodeHtmlEntities,
+  getRangeSearchPlan,
   parseMoney,
 } from './normalizeClient';
 
@@ -145,13 +148,15 @@ function buildConciseFallbackQuery(
 // ---------------------------------------------------------------------------
 export async function searchWoolworthsProducts(
   query: string,
-  limit = 16,
-  locationCtx: LocationSearchContext = {}
+  limit = 24,
+  locationCtx: LocationSearchContext = {},
+  page = 1
 ): Promise<SpecialItem[]> {
+  const safePage = Math.max(1, Math.floor(page || 1));
   const pageSize = Math.min(Math.max(limit, 20), 36);
   const url = `https://www.woolworths.com.au/apis/ui/Search/products?searchTerm=${encodeURIComponent(
     query
-  )}&pageSize=${pageSize}`;
+  )}&pageNumber=${safePage}&pageSize=${pageSize}`;
   const res = await fetchWithTimeout(url, 9500, { Accept: 'application/json' });
   const json = await res.json();
 
@@ -219,6 +224,9 @@ export async function searchWoolworthsProducts(
         .filter(Boolean)
         .join(' ');
 
+      const category = classifyCategory(wwCatHint, title, 'woolworths');
+      const subCategory = classifySubCategory(wwCatHint, title, category);
+
       out.push({
         id: `woolworths-sku-${p.Stockcode || title}`,
         store: 'woolworths',
@@ -237,7 +245,8 @@ export async function searchWoolworthsProducts(
         isHalfPrice,
         promoText,
         unitPrice: p.CupString ? decodeHtmlEntities(p.CupString) : null,
-        category: classifyCategory(wwCatHint, title, 'woolworths'),
+        category,
+        subCategory,
         imageUrl: p.LargeImageFile || p.MediumImageFile || null,
         productUrl,
         catalogueName: isOnSale ? 'Woolworths Specials' : 'Woolworths Everyday Range',
@@ -259,21 +268,37 @@ export async function searchWoolworthsProducts(
 // ---------------------------------------------------------------------------
 export async function searchColesProducts(
   query: string,
-  limit = 10,
-  locationCtx: LocationSearchContext = {}
+  limit = 48,
+  locationCtx: LocationSearchContext = {},
+  page = 1
 ): Promise<SpecialItem[]> {
-  const searchUrl = `https://www.coles.com.au/search/products?q=${encodeURIComponent(
-    query
-  )}`;
+  if (page > 1) return [];
+  const isBrowse = query.startsWith('browse:');
+  const browseSlug = isBrowse ? query.slice(7).trim() : '';
+  const searchUrl = isBrowse
+    ? `https://www.coles.com.au/browse/${encodeURIComponent(browseSlug)}`
+    : `https://www.coles.com.au/search/products?q=${encodeURIComponent(query)}`;
+
   const res = await fetchWithTimeout(searchUrl, 10000);
   const html = await res.text();
 
   const nextMatch = html.match(
     /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i
   );
-  if (!nextMatch) return [];
+  if (!nextMatch || !nextMatch[1]?.trim()) return [];
 
-  const nextJson = JSON.parse(nextMatch[1]);
+  let nextJson: {
+    props?: {
+      pageProps?: {
+        searchResults?: { results?: Array<Record<string, any>> };
+      };
+    };
+  };
+  try {
+    nextJson = JSON.parse(nextMatch[1]);
+  } catch {
+    return [];
+  }
   const rawResults =
     nextJson?.props?.pageProps?.searchResults?.results || [];
 
@@ -366,6 +391,9 @@ export async function searchColesProducts(
         : 'In Stock'
       : 'Out of Stock';
 
+    const category = classifyCategory(catHint, fullTitle, 'coles');
+    const subCategory = classifySubCategory(catHint, fullTitle, category);
+
     out.push({
       id: `coles-sku-${r.id || slug}`,
       store: 'coles',
@@ -383,7 +411,8 @@ export async function searchColesProducts(
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: r.pricing.comparable ? decodeHtmlEntities(r.pricing.comparable) : null,
-      category: classifyCategory(catHint, fullTitle, 'coles'),
+      category,
+      subCategory,
       imageUrl,
       productUrl,
       catalogueName: isOnSale ? 'Coles Specials' : 'Coles Everyday Range',
@@ -405,17 +434,33 @@ export async function searchColesProducts(
 // ---------------------------------------------------------------------------
 export async function searchAldiProducts(
   query: string,
-  limit = 12,
-  locationCtx: LocationSearchContext = {}
+  limit = 24,
+  locationCtx: LocationSearchContext = {},
+  page = 1
 ): Promise<SpecialItem[]> {
   // ALDI API allows limit in [12,16,24,30,32,48,60]
-  const validLimit = limit <= 12 ? 12 : limit <= 16 ? 16 : 24;
+  const validLimit =
+    limit <= 12
+      ? 12
+      : limit <= 16
+      ? 16
+      : limit <= 24
+      ? 24
+      : limit <= 30
+      ? 30
+      : limit <= 32
+      ? 32
+      : limit <= 48
+      ? 48
+      : 60;
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const offset = (safePage - 1) * validLimit;
   const qs = new URLSearchParams({
     currency: 'AUD',
     serviceType: 'walk-in',
     q: query,
     limit: String(validLimit),
-    offset: '0',
+    offset: String(offset),
     sort: 'relevance',
   });
   if (locationCtx.aldiStoreId) {
@@ -499,6 +544,9 @@ export async function searchAldiProducts(
       ? `In Range • ${aldiStoreName}`
       : 'In-Store Range';
 
+    const category = classifyCategory(catNames, fullTitle, 'aldi');
+    const subCategory = classifySubCategory(catNames, fullTitle, category);
+
     out.push({
       id: `aldi-${item.sku || slug}`,
       store: 'aldi',
@@ -519,7 +567,8 @@ export async function searchAldiProducts(
         decodeHtmlEntities(
           item.price.comparisonDisplay || item.price.perUnitDisplay || ''
         ) || null,
-      category: classifyCategory(catNames, fullTitle, 'aldi'),
+      category,
+      subCategory,
       imageUrl,
       productUrl: item.urlSlugText
         ? `https://www.aldi.com.au/product/${item.urlSlugText}-${item.sku}`
@@ -542,14 +591,17 @@ export async function searchAldiProducts(
 // ---------------------------------------------------------------------------
 export async function searchIgaProducts(
   query: string,
-  limit = 10,
-  locationCtx: LocationSearchContext = {}
+  limit = 20,
+  locationCtx: LocationSearchContext = {},
+  page = 1
 ): Promise<SpecialItem[]> {
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const skip = (safePage - 1) * limit;
   const activeStoreId = locationCtx.igaStoreId || IGA_DEFAULT_STORE_ID;
   const localStoreName = locationCtx.igaStoreName || null;
   const url = `https://www.igashop.com.au/api/storefront/stores/${encodeURIComponent(
     activeStoreId
-  )}/search?q=${encodeURIComponent(query)}&take=${limit}`;
+  )}/search?q=${encodeURIComponent(query)}&take=${limit}&skip=${skip}`;
 
   const res = await fetchWithTimeout(url, 9500, { Accept: 'application/json' });
   const json = await res.json();
@@ -621,6 +673,9 @@ export async function searchIgaProducts(
       ? `Out of Stock • ${localStoreName}`
       : 'Out of Stock';
 
+    const category = classifyCategory(catHint, fullTitle, 'iga');
+    const subCategory = classifySubCategory(catHint, fullTitle, category);
+
     out.push({
       id: `iga-${activeStoreId}-${item.productId || item.sku || fullTitle}`,
       store: 'iga',
@@ -638,7 +693,8 @@ export async function searchIgaProducts(
       isHalfPrice: savings.isHalfPrice,
       promoText,
       unitPrice: item.pricePerUnit ? decodeHtmlEntities(item.pricePerUnit) : null,
-      category: classifyCategory(catHint, fullTitle, 'iga'),
+      category,
+      subCategory,
       imageUrl: item.image?.default || item.image?.cell || null,
       productUrl: `https://www.igashop.com.au/search?q=${encodeURIComponent(fullTitle)}`,
       catalogueName:
@@ -658,9 +714,15 @@ export async function searchIgaProducts(
 // ---------------------------------------------------------------------------
 export async function searchAmazonAuProducts(
   query: string,
-  limit = 8
+  limit = 10,
+  _locationCtx: LocationSearchContext = {},
+  page = 1
 ): Promise<SpecialItem[]> {
-  const searchUrl = `https://www.amazon.com.au/s?k=${encodeURIComponent(query)}`;
+  const rawPage = Number(page);
+  const safePage = Number.isFinite(rawPage) && rawPage >= 1 ? Math.floor(rawPage) : 1;
+  const searchUrl = `https://www.amazon.com.au/s?k=${encodeURIComponent(query)}${
+    safePage > 1 ? `&page=${safePage}` : ''
+  }`;
   const res = await fetchWithTimeout(searchUrl, 10000);
   const html = await res.text();
 
@@ -706,6 +768,9 @@ export async function searchAmazonAuProducts(
       /\((\$[\d,.]+\s*\/\s*(?:\d+\s*)?[a-zA-Z]+)\)/
     );
 
+    const category = classifyCategory('', title, 'amazon');
+    const subCategory = classifySubCategory('', title, category);
+
     out.push({
       id: `amazon-${asin}`,
       store: 'amazon',
@@ -725,7 +790,8 @@ export async function searchAmazonAuProducts(
           ? `Save $${savings.saveAmount.toFixed(2)}`
           : null,
       unitPrice: unitMatch ? unitMatch[1] : null,
-      category: classifyCategory('', title, 'amazon'),
+      category,
+      subCategory,
       imageUrl: img,
       productUrl: `https://www.amazon.com.au/dp/${asin}`,
       catalogueName: 'Amazon.com.au',
@@ -1048,25 +1114,7 @@ export async function compareItemAcrossCompetitorsOnDevice(
   return { queryUsed, quotes };
 }
 
-/**
- * Live cross-store product search (both everyday items & sales) across Woolworths, Coles, ALDI, IGA & Amazon AU!
- */
-export async function searchAllCompetitorsLive(
-  query: string,
-  locationCtx: LocationSearchContext = {}
-): Promise<SpecialItem[]> {
-  const q = query.trim();
-  if (!q) return [];
-
-  const settled = await Promise.allSettled([
-    searchWoolworthsProducts(q, 20, locationCtx),
-    searchColesProducts(q, 20, locationCtx),
-    searchAldiProducts(q, 24, locationCtx),
-    searchIgaProducts(q, 16, locationCtx),
-    searchAmazonAuProducts(q, 10),
-  ]);
-
-  const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
+function interleaveUniqueLists(lists: SpecialItem[][]): SpecialItem[] {
   const maxLen = Math.max(...lists.map((l) => l.length), 0);
   const interleaved: SpecialItem[] = [];
   const seen = new Set<string>();
@@ -1080,4 +1128,142 @@ export async function searchAllCompetitorsLive(
     }
   }
   return interleaved;
+}
+
+/**
+ * Live cross-store product search (both everyday items & sales) across Woolworths, Coles, ALDI, IGA & Amazon AU!
+ */
+export async function searchAllCompetitorsLive(
+  query: string,
+  locationCtx: LocationSearchContext = {},
+  page = 1
+): Promise<SpecialItem[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const safePage = Math.max(1, Math.floor(page || 1));
+
+  const settled = await Promise.allSettled([
+    searchWoolworthsProducts(q, 32, locationCtx, safePage),
+    safePage === 1
+      ? searchColesProducts(q, 48, locationCtx, 1)
+      : Promise.resolve([]),
+    searchAldiProducts(q, 32, locationCtx, safePage),
+    searchIgaProducts(q, 28, locationCtx, safePage),
+    searchAmazonAuProducts(q, 12, locationCtx, safePage),
+  ]);
+
+  const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
+  return interleaveUniqueLists(lists);
+}
+
+export interface RangePageOptions {
+  query?: string;
+  category?: string;
+  subCategory?: string;
+  store?: StoreFilter;
+  page?: number;
+  locationCtx?: LocationSearchContext;
+}
+
+/**
+ * Fetch a page of full supermarket range items (everyday regular-price + specials)
+ * for any search query, aisle, subcategory, or store.
+ */
+export async function fetchSupermarketRangePage(
+  options: RangePageOptions = {}
+): Promise<SpecialItem[]> {
+  const {
+    query = '',
+    category = 'All',
+    subCategory = 'All',
+    store = 'all',
+    page = 1,
+    locationCtx = {},
+  } = options;
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const trimmedQ = query.trim();
+
+  const wantsStore = (s: StoreId) => !store || store === 'all' || store === s;
+
+  if (trimmedQ) {
+    if (!store || store === 'all') {
+      return searchAllCompetitorsLive(trimmedQ, locationCtx, safePage);
+    }
+    const singleTasks: Promise<SpecialItem[]>[] = [];
+    if (wantsStore('woolworths')) {
+      singleTasks.push(searchWoolworthsProducts(trimmedQ, 36, locationCtx, safePage));
+    }
+    if (wantsStore('coles') && safePage === 1) {
+      singleTasks.push(searchColesProducts(trimmedQ, 54, locationCtx, 1));
+    }
+    if (wantsStore('aldi')) {
+      singleTasks.push(searchAldiProducts(trimmedQ, 48, locationCtx, safePage));
+    }
+    if (wantsStore('iga')) {
+      singleTasks.push(searchIgaProducts(trimmedQ, 36, locationCtx, safePage));
+    }
+    if (wantsStore('amazon')) {
+      singleTasks.push(
+        searchAmazonAuProducts(trimmedQ, 16, locationCtx, safePage)
+      );
+    }
+    const settled = await Promise.allSettled(singleTasks);
+    return interleaveUniqueLists(
+      settled.map((r) => (r.status === 'fulfilled' ? r.value : []))
+    );
+  }
+
+  const plan = getRangeSearchPlan(category, subCategory, safePage);
+  const terms = [plan.primaryTerm, plan.secondaryTerm].filter(
+    (t): t is string => Boolean(t)
+  );
+
+  const tasks: Promise<SpecialItem[]>[] = [];
+
+  if (wantsStore('woolworths')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) =>
+          searchWoolworthsProducts(t, 28, locationCtx, plan.apiPage)
+        )
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  if (wantsStore('coles') && plan.colesQuery) {
+    tasks.push(searchColesProducts(plan.colesQuery, 52, locationCtx, 1));
+  }
+
+  if (wantsStore('aldi')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) => searchAldiProducts(t, 32, locationCtx, plan.apiPage))
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  if (wantsStore('iga')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) => searchIgaProducts(t, 24, locationCtx, plan.apiPage))
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  const settled = await Promise.allSettled(tasks);
+  return interleaveUniqueLists(
+    settled.map((r) => (r.status === 'fulfilled' ? r.value : []))
+  );
 }

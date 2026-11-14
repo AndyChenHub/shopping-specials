@@ -8,6 +8,7 @@ import {
 import {
   CLIENT_CATEGORIES,
   classifyCategory,
+  classifySubCategory,
   computeSavings,
   decodeHtmlEntities,
   extractSaleFinderUrlHint,
@@ -251,11 +252,9 @@ function parseSaleFinderListHtml(
       promoText = 'Weekly Special';
     }
 
-    const category = classifyCategory(
-      extractUrlCategoryHint(href),
-      fullTitle,
-      config.store
-    );
+    const urlHint = extractUrlCategoryHint(href);
+    const category = classifyCategory(urlHint, fullTitle, config.store);
+    const subCategory = classifySubCategory(urlHint, fullTitle, category);
 
     const productUrl = href
       ? href.startsWith('http')
@@ -280,6 +279,7 @@ function parseSaleFinderListHtml(
       promoText,
       unitPrice,
       category,
+      subCategory,
       imageUrl: imgSrc ? imgSrc.replace(/^\/\//, 'https://') : null,
       productUrl,
       catalogueName: catalogue.name,
@@ -396,11 +396,18 @@ function mapAldiItem(
     .filter(Boolean)
     .join(' ');
 
+  const isSpecialCollection =
+    /super\s*savers?|special\s*buys?|low\s*price\s*special/i.test(sourceLabel);
+
   const savings = computeSavings({
     price: rawPrice,
     wasPrice: item.price.wasPriceDisplay,
     saveAmount: item.price.savingsDisplay,
-    promoText: [item.price.savingsDisplay, badges, sourceLabel]
+    promoText: [
+      item.price.savingsDisplay,
+      badges,
+      isSpecialCollection ? sourceLabel : '',
+    ]
       .filter(Boolean)
       .join(' • '),
   });
@@ -415,9 +422,10 @@ function mapAldiItem(
       : baseName;
 
   const catNames = (item.categories || []).map((c) => c.name || '').join(' ');
-  const category = classifyCategory(`${catNames} ${sourceLabel}`, fullTitle, 'aldi');
+  const rawHint = `${catNames} ${isSpecialCollection ? sourceLabel : ''}`.trim();
+  const category = classifyCategory(rawHint, fullTitle, 'aldi');
+  const subCategory = classifySubCategory(rawHint, fullTitle, category);
 
-  const isSpecialCollection = /super\s*savers?|special\s*buys?/i.test(sourceLabel);
   const isOnSale = Boolean(
     savings.isHalfPrice ||
       (savings.saveAmount && savings.saveAmount > 0) ||
@@ -426,7 +434,11 @@ function mapAldiItem(
       isSpecialCollection
   );
 
-  let promoText: string | null = isOnSale ? sourceLabel : null;
+  let promoText: string | null = isOnSale
+    ? isSpecialCollection
+      ? sourceLabel
+      : 'Special Buy'
+    : null;
   if (savings.isHalfPrice) {
     promoText = '1/2 Price';
   } else if (item.price.savingsDisplay) {
@@ -483,11 +495,14 @@ function mapAldiItem(
         item.price.comparisonDisplay || item.price.perUnitDisplay || ''
       ) || null,
     category,
+    subCategory,
     imageUrl,
     productUrl: item.urlSlugText
       ? `${ALDI_WEB_BASE}/product/${item.urlSlugText}-${item.sku}`
       : `${ALDI_WEB_BASE}/special-buys/`,
-    catalogueName: `ALDI ${sourceLabel}`,
+    catalogueName: isOnSale
+      ? `ALDI ${isSpecialCollection ? sourceLabel : 'Special Buys'}`
+      : 'ALDI Everyday Range',
     validDates,
     inStock,
     stockLabel,
@@ -544,55 +559,70 @@ export async function fetchAldiDirect(
   const catFacet = facets.find((f: { name?: string }) => f.name === 'category-tree');
   const themeFacet = facets.find((f: { name?: string }) => f.name === 'theme');
 
-  const collections: Array<{
+  type AldiCollectionSpec = {
     param: string;
     fallbackParam?: string;
     key: string;
     label: string;
     limit: number;
-  }> = [];
+  };
+
+  const promoCollections: AldiCollectionSpec[] = [];
+  const everydayDepartments: AldiCollectionSpec[] = [];
 
   for (const v of catFacet?.values || []) {
     if (/super\s*savers?/i.test(v.label)) {
-      collections.push({
+      promoCollections.push({
         param: 'categoryKey',
         fallbackParam: 'categoryTree',
         key: v.key,
         label: 'Super Savers',
-        limit: 30,
+        limit: 48,
       });
     } else if (/limited\s*time/i.test(v.label)) {
-      collections.push({
+      promoCollections.push({
         param: 'categoryKey',
         fallbackParam: 'categoryTree',
         key: v.key,
         label: 'Special Buys',
-        limit: 48,
+        limit: 60,
       });
     } else if (/new\s*low\s*price/i.test(v.label)) {
-      collections.push({
+      promoCollections.push({
         param: 'categoryKey',
         fallbackParam: 'categoryTree',
         key: v.key,
         label: 'Low Price Special',
         limit: 48,
       });
+    } else if (
+      /fruits?\s*(?:&|and)\s*veg|meat\s*(?:&|and)\s*seafood|deli\s*(?:&|and)\s*chilled|dairy|pantry|bakery|freezer|drinks|health\s*(?:&|and)\s*beauty|baby|cleaning\s*(?:&|and)\s*household|pets?|snacks?\s*(?:&|and)\s*confectionery/i.test(
+        v.label
+      )
+    ) {
+      everydayDepartments.push({
+        param: 'categoryKey',
+        fallbackParam: 'categoryTree',
+        key: v.key,
+        label: 'Everyday Range',
+        limit: 60,
+      });
     }
   }
 
   for (const v of themeFacet?.values || []) {
     if (/grocery\s*specials/i.test(v.label)) {
-      collections.push({
+      promoCollections.push({
         param: 'theme',
         key: v.key,
         label: 'Grocery Special Buys',
-        limit: 32,
+        limit: 48,
       });
     }
   }
 
-  if (collections.length === 0) {
-    collections.push({
+  if (promoCollections.length === 0) {
+    promoCollections.push({
       param: 'q',
       key: 'special',
       label: 'Special Buys',
@@ -600,41 +630,50 @@ export async function fetchAldiDirect(
     });
   }
 
-  await Promise.allSettled(
-    collections.map(async (col) => {
-      let data: AldiRawProduct[] = [];
-      try {
-        const res = await queryAldiDirect({
-          [col.param]: col.key,
-          limit: col.limit,
-          offset: 0,
-          sort: 'relevance',
-          ...spParam,
-        });
-        data = res?.data || [];
-      } catch {
-        // try fallback
-      }
-      if (data.length === 0 && col.fallbackParam) {
+  const fetchCollectionBatch = async (batch: AldiCollectionSpec[]) => {
+    await Promise.allSettled(
+      batch.map(async (col) => {
+        let data: AldiRawProduct[] = [];
         try {
-          const res2 = await queryAldiDirect({
-            [col.fallbackParam]: col.key,
+          const res = await queryAldiDirect({
+            [col.param]: col.key,
             limit: col.limit,
             offset: 0,
             sort: 'relevance',
             ...spParam,
           });
-          data = res2?.data || [];
+          data = res?.data || [];
         } catch {
-          // ignore
+          // try fallback
         }
-      }
-      for (const raw of data) {
-        const mapped = mapAldiItem(raw, col.label, locationCtx);
-        if (mapped && !seen.has(mapped.id)) seen.set(mapped.id, mapped);
-      }
-    })
-  );
+        if (data.length === 0 && col.fallbackParam) {
+          try {
+            const res2 = await queryAldiDirect({
+              [col.fallbackParam]: col.key,
+              limit: col.limit,
+              offset: 0,
+              sort: 'relevance',
+              ...spParam,
+            });
+            data = res2?.data || [];
+          } catch {
+            // ignore
+          }
+        }
+        for (const raw of data) {
+          const mapped = mapAldiItem(raw, col.label, locationCtx);
+          if (mapped && !seen.has(mapped.id)) seen.set(mapped.id, mapped);
+        }
+      })
+    );
+  };
+
+  await fetchCollectionBatch(promoCollections);
+
+  const deptBatchSize = 4;
+  for (let i = 0; i < everydayDepartments.length; i += deptBatchSize) {
+    await fetchCollectionBatch(everydayDepartments.slice(i, i + deptBatchSize));
+  }
 
   if (seen.size === 0) {
     for (const raw of discovery?.data || []) {
@@ -647,25 +686,65 @@ export async function fetchAldiDirect(
 }
 
 const EVERYDAY_STAPLES_QUERIES = [
+  'apples',
+  'bananas',
+  'tomatoes',
+  'potatoes',
+  'salad',
+  'beef mince',
+  'chicken breast',
+  'sausages',
+  'salmon',
   'milk',
-  'bread',
+  'cheese',
+  'yoghurt',
   'eggs',
-  'chips',
+  'bread',
+  'wraps',
+  'potato chips',
+  'crackers',
   'chocolate',
-  'soft drink',
+  'lollies',
   'biscuits',
-  'coffee',
   'cereal',
   'pasta',
-  'rice',
-  'cheese',
-  'yogurt',
-  'chicken breast',
-  'apples',
+  'soft drink',
+  'coffee',
   'ice cream',
+  'frozen pizza',
+  'laundry liquid',
+  'vitamins',
 ];
 
-const COLES_GENTLE_STAPLES = new Set(['milk', 'chips', 'coffee', 'cheese']);
+const COLES_BROWSE_DEPARTMENTS = [
+  'browse:pantry',
+  'browse:meat-seafood',
+  'browse:fruit-vegetables',
+  'browse:dairy-eggs-fridge',
+];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchColesEverydaySequential(
+  locationCtx: LocationSearchContext = {}
+): Promise<SpecialItem[]> {
+  const colesMap = new Map<string, SpecialItem>();
+  for (let i = 0; i < COLES_BROWSE_DEPARTMENTS.length; i++) {
+    if (i > 0) await sleep(1050);
+    try {
+      const items = await searchColesProducts(
+        COLES_BROWSE_DEPARTMENTS[i],
+        56,
+        locationCtx,
+        1
+      );
+      for (const item of items) colesMap.set(item.id, item);
+    } catch {
+      // ignore individual department hiccup
+    }
+  }
+  return Array.from(colesMap.values());
+}
 
 async function fetchEverydayBrowseRange(
   locationCtx: LocationSearchContext = {}
@@ -675,26 +754,21 @@ async function fetchEverydayBrowseRange(
   iga: SpecialItem[];
 }> {
   const wwMap = new Map<string, SpecialItem>();
-  const colesMap = new Map<string, SpecialItem>();
   const igaMap = new Map<string, SpecialItem>();
 
-  const batchSize = 4;
+  const colesPromise = fetchColesEverydaySequential(locationCtx);
+
+  const batchSize = 6;
   for (let i = 0; i < EVERYDAY_STAPLES_QUERIES.length; i += batchSize) {
     const batch = EVERYDAY_STAPLES_QUERIES.slice(i, i + batchSize);
     await Promise.allSettled(
       batch.map(async (term) => {
-        const [ww, cl, ig] = await Promise.allSettled([
-          searchWoolworthsProducts(term, 10, locationCtx),
-          COLES_GENTLE_STAPLES.has(term)
-            ? searchColesProducts(term, 12, locationCtx)
-            : Promise.resolve([]),
-          searchIgaProducts(term, 8, locationCtx),
+        const [ww, ig] = await Promise.allSettled([
+          searchWoolworthsProducts(term, 24, locationCtx, 1),
+          searchIgaProducts(term, 20, locationCtx, 1),
         ]);
         if (ww.status === 'fulfilled') {
           for (const item of ww.value) wwMap.set(item.id, item);
-        }
-        if (cl.status === 'fulfilled') {
-          for (const item of cl.value) colesMap.set(item.id, item);
         }
         if (ig.status === 'fulfilled') {
           for (const item of ig.value) igaMap.set(item.id, item);
@@ -703,22 +777,61 @@ async function fetchEverydayBrowseRange(
     );
   }
 
+  const colesItems = await colesPromise;
+
   return {
     woolworths: Array.from(wwMap.values()),
-    coles: Array.from(colesMap.values()),
+    coles: colesItems,
     iga: Array.from(igaMap.values()),
   };
 }
 
+function normalizeDedupeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 function dedupeStoreList(list: SpecialItem[]): SpecialItem[] {
-  const map = new Map<string, SpecialItem>();
+  const byKey = new Map<string, SpecialItem>();
+  const skuToKey = new Map<string, string>();
+
   for (const item of list) {
-    const key = `${item.store}-${item.title.toLowerCase().slice(0, 38)}`;
-    if (!map.has(key)) {
-      map.set(key, item);
+    const normTitle = normalizeDedupeTitle(item.title);
+    const skuKey = item.sku ? `${item.store}-sku-${item.sku}` : null;
+    const existingKey =
+      (skuKey && skuToKey.get(skuKey)) || `${item.store}-${normTitle}`;
+
+    const prev = byKey.get(existingKey);
+    if (!prev) {
+      byKey.set(existingKey, item);
+      if (skuKey) skuToKey.set(skuKey, existingKey);
+      continue;
     }
+
+    const merged: SpecialItem = {
+      ...prev,
+      sku: prev.sku || item.sku || null,
+      barcode: prev.barcode || item.barcode || null,
+      brand: prev.brand || item.brand || null,
+      packageSize: prev.packageSize || item.packageSize || null,
+      imageUrl: prev.imageUrl || item.imageUrl || null,
+      unitPrice: prev.unitPrice || item.unitPrice || null,
+      inStock: prev.inStock ?? item.inStock,
+      stockLabel: prev.stockLabel || item.stockLabel,
+      localStoreName: prev.localStoreName || item.localStoreName || null,
+      isOnSale: Boolean(prev.isOnSale || item.isOnSale),
+      isHalfPrice: Boolean(prev.isHalfPrice || item.isHalfPrice),
+      wasPrice: prev.wasPrice ?? item.wasPrice ?? null,
+      saveAmount: prev.saveAmount ?? item.saveAmount ?? null,
+      discountPercent: prev.discountPercent ?? item.discountPercent ?? null,
+      promoText: prev.promoText || item.promoText || null,
+    };
+    byKey.set(existingKey, merged);
+    if (skuKey) skuToKey.set(skuKey, existingKey);
   }
-  return Array.from(map.values());
+  return Array.from(byKey.values());
 }
 
 function interleaveStores(storeLists: SpecialItem[][]): SpecialItem[] {

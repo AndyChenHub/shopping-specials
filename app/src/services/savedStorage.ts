@@ -70,7 +70,12 @@ const VALID_STORES: StoreFilter[] = [
   'iga',
   'amazon',
 ];
-const VALID_DEAL_FILTERS: DealFilter[] = ['all', 'sale', 'half_price'];
+const VALID_DEAL_FILTERS: DealFilter[] = [
+  'all',
+  'regular',
+  'sale',
+  'half_price',
+];
 const VALID_SORTS: SortOption[] = [
   'featured',
   'savings',

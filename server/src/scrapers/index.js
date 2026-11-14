@@ -10,53 +10,86 @@ import {
 } from './competitors.js';
 import { searchSuburbs, findNearbyStores } from './locations.js';
 import { saveCacheToDisk, getStoreState, setSyncStatus } from '../cache.js';
+import { getRangeSearchPlan } from '../normalize.js';
 
 let activeSyncPromise = null;
 
 const EVERYDAY_STAPLES = [
+  'apples',
+  'bananas',
+  'tomatoes',
+  'potatoes',
+  'salad',
+  'beef mince',
+  'chicken breast',
+  'sausages',
+  'salmon',
   'milk',
-  'bread',
+  'cheese',
+  'yoghurt',
   'eggs',
-  'chips',
+  'bread',
+  'wraps',
+  'potato chips',
+  'crackers',
   'chocolate',
-  'soft drink',
+  'lollies',
   'biscuits',
-  'coffee',
   'cereal',
   'pasta',
-  'rice',
-  'cheese',
-  'yogurt',
-  'chicken breast',
-  'apples',
+  'soft drink',
+  'coffee',
   'ice cream',
+  'frozen pizza',
+  'laundry liquid',
+  'vitamins',
 ];
 
-const COLES_GENTLE_STAPLES = new Set(['milk', 'chips', 'coffee', 'cheese']);
+const COLES_BROWSE_DEPARTMENTS = [
+  'browse:pantry',
+  'browse:meat-seafood',
+  'browse:fruit-vegetables',
+  'browse:dairy-eggs-fridge',
+];
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchColesEverydaySequential(locationCtx = {}) {
+  const colesMap = new Map();
+  for (let i = 0; i < COLES_BROWSE_DEPARTMENTS.length; i++) {
+    if (i > 0) await sleep(1050);
+    try {
+      const items = await searchColesProducts(
+        COLES_BROWSE_DEPARTMENTS[i],
+        56,
+        locationCtx,
+        1
+      );
+      for (const item of items) colesMap.set(item.id, item);
+    } catch {
+      // ignore individual department hiccup
+    }
+  }
+  return Array.from(colesMap.values());
+}
 
 async function fetchEverydayRange(locationCtx = {}) {
   const wwMap = new Map();
-  const colesMap = new Map();
   const igaMap = new Map();
 
-  // Fetch in gentle batches of 4 terms (with at most 1 Coles SSR query per batch)
-  const batchSize = 4;
+  const colesPromise = fetchColesEverydaySequential(locationCtx);
+
+  const batchSize = 6;
   for (let i = 0; i < EVERYDAY_STAPLES.length; i += batchSize) {
     const batch = EVERYDAY_STAPLES.slice(i, i + batchSize);
     await Promise.allSettled(
       batch.map(async (term) => {
-        const [ww, cl, ig] = await Promise.allSettled([
-          searchWoolworthsProducts(term, 10, locationCtx),
-          COLES_GENTLE_STAPLES.has(term)
-            ? searchColesProducts(term, 12, locationCtx)
-            : Promise.resolve([]),
-          searchIgaProducts(term, 8, locationCtx),
+        const [ww, ig] = await Promise.allSettled([
+          searchWoolworthsProducts(term, 24, locationCtx, 1),
+          searchIgaProducts(term, 20, locationCtx, 1),
         ]);
         if (ww.status === 'fulfilled') {
           for (const item of ww.value) wwMap.set(item.id, item);
-        }
-        if (cl.status === 'fulfilled') {
-          for (const item of cl.value) colesMap.set(item.id, item);
         }
         if (ig.status === 'fulfilled') {
           for (const item of ig.value) igaMap.set(item.id, item);
@@ -65,20 +98,61 @@ async function fetchEverydayRange(locationCtx = {}) {
     );
   }
 
+  const colesItems = await colesPromise;
+
   return {
     woolworths: Array.from(wwMap.values()),
-    coles: Array.from(colesMap.values()),
+    coles: colesItems,
     iga: Array.from(igaMap.values()),
   };
 }
 
+function normalizeDedupeTitle(title) {
+  return String(title || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
 function dedupeStoreList(list) {
-  const map = new Map();
+  const byKey = new Map();
+  const skuToKey = new Map();
+
   for (const item of list) {
-    const key = `${item.store}-${String(item.title).toLowerCase().slice(0, 38)}`;
-    if (!map.has(key)) map.set(key, item);
+    const normTitle = normalizeDedupeTitle(item.title);
+    const skuKey = item.sku ? `${item.store}-sku-${item.sku}` : null;
+    const existingKey =
+      (skuKey && skuToKey.get(skuKey)) || `${item.store}-${normTitle}`;
+
+    const prev = byKey.get(existingKey);
+    if (!prev) {
+      byKey.set(existingKey, item);
+      if (skuKey) skuToKey.set(skuKey, existingKey);
+      continue;
+    }
+
+    const merged = {
+      ...prev,
+      sku: prev.sku || item.sku || null,
+      barcode: prev.barcode || item.barcode || null,
+      brand: prev.brand || item.brand || null,
+      packageSize: prev.packageSize || item.packageSize || null,
+      imageUrl: prev.imageUrl || item.imageUrl || null,
+      unitPrice: prev.unitPrice || item.unitPrice || null,
+      inStock: prev.inStock ?? item.inStock,
+      stockLabel: prev.stockLabel || item.stockLabel,
+      localStoreName: prev.localStoreName || item.localStoreName || null,
+      isOnSale: Boolean(prev.isOnSale || item.isOnSale),
+      isHalfPrice: Boolean(prev.isHalfPrice || item.isHalfPrice),
+      wasPrice: prev.wasPrice ?? item.wasPrice ?? null,
+      saveAmount: prev.saveAmount ?? item.saveAmount ?? null,
+      discountPercent: prev.discountPercent ?? item.discountPercent ?? null,
+      promoText: prev.promoText || item.promoText || null,
+    };
+    byKey.set(existingKey, merged);
+    if (skuKey) skuToKey.set(skuKey, existingKey);
   }
-  return Array.from(map.values());
+  return Array.from(byKey.values());
 }
 
 function interleaveLists(lists) {
@@ -218,30 +292,50 @@ export async function syncAllSupermarkets({
   }
 }
 
+function interleaveUniqueLists(lists) {
+  const maxLen = Math.max(...lists.map((l) => l.length), 0);
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < maxLen; i++) {
+    for (const list of lists) {
+      if (i < list.length && !seen.has(list[i].id)) {
+        seen.add(list[i].id);
+        out.push(list[i]);
+      }
+    }
+  }
+  return out;
+}
+
 /**
  * Live search across cached items + live Woolworths, Coles, ALDI, IGA & Amazon AU feeds!
  */
-export async function searchSpecialsLive(query, locationCtx = {}) {
+export async function searchSpecialsLive(query, locationCtx = {}, page = 1) {
   const q = String(query || '').trim();
   const state = getStoreState();
   if (!q) return state.items;
+  const safePage = Math.max(1, Math.floor(page || 1));
 
   const settled = await Promise.allSettled([
-    searchWoolworthsProducts(q, 20, locationCtx),
-    searchColesProducts(q, 20, locationCtx),
-    searchAldiProducts(q, 24, locationCtx),
-    searchIgaProducts(q, 16, locationCtx),
-    searchAmazonAuProducts(q, 10),
+    searchWoolworthsProducts(q, 32, locationCtx, safePage),
+    safePage === 1 ? searchColesProducts(q, 48, locationCtx, 1) : Promise.resolve([]),
+    searchAldiProducts(q, 32, locationCtx, safePage),
+    searchIgaProducts(q, 28, locationCtx, safePage),
+    searchAmazonAuProducts(q, 12, locationCtx, safePage),
   ]);
 
   const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value : []));
-  const liveInterleaved = interleaveLists(lists);
+  const liveInterleaved = interleaveUniqueLists(lists);
+
+  if (safePage > 1) {
+    return liveInterleaved;
+  }
 
   const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
   const localMatches = (state.items || []).filter((item) => {
     const hay = `${item.title} ${item.brand || ''} ${item.category} ${
-      item.promoText || ''
-    } ${item.storeName}`.toLowerCase();
+      item.subCategory || ''
+    } ${item.promoText || ''} ${item.storeName}`.toLowerCase();
     return tokens.every((t) => hay.includes(t));
   });
 
@@ -254,6 +348,108 @@ export async function searchSpecialsLive(query, locationCtx = {}) {
     }
   }
   return out;
+}
+
+/**
+ * Fetch a page of full supermarket range items (everyday regular-price + specials)
+ * for any search query, aisle, subcategory, or store.
+ */
+export async function fetchSupermarketRangePage({
+  query = '',
+  category = 'All',
+  subCategory = 'All',
+  store = 'all',
+  page = 1,
+  locationCtx = {},
+} = {}) {
+  const safePage = Math.max(1, Math.floor(page || 1));
+  const trimmedQ = String(query || '').trim();
+  const allowedStores =
+    store && store !== 'all'
+      ? new Set(
+          String(store)
+            .toLowerCase()
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        )
+      : null;
+  const wantsStore = (s) => !allowedStores || allowedStores.has(s);
+
+  if (trimmedQ) {
+    if (!allowedStores) {
+      return searchSpecialsLive(trimmedQ, locationCtx, safePage);
+    }
+    const singleTasks = [];
+    if (wantsStore('woolworths')) {
+      singleTasks.push(searchWoolworthsProducts(trimmedQ, 36, locationCtx, safePage));
+    }
+    if (wantsStore('coles') && safePage === 1) {
+      singleTasks.push(searchColesProducts(trimmedQ, 54, locationCtx, 1));
+    }
+    if (wantsStore('aldi')) {
+      singleTasks.push(searchAldiProducts(trimmedQ, 48, locationCtx, safePage));
+    }
+    if (wantsStore('iga')) {
+      singleTasks.push(searchIgaProducts(trimmedQ, 36, locationCtx, safePage));
+    }
+    if (wantsStore('amazon')) {
+      singleTasks.push(searchAmazonAuProducts(trimmedQ, 16, locationCtx, safePage));
+    }
+    const settled = await Promise.allSettled(singleTasks);
+    return interleaveUniqueLists(
+      settled.map((r) => (r.status === 'fulfilled' ? r.value : []))
+    );
+  }
+
+  const plan = getRangeSearchPlan(category, subCategory, safePage);
+  const terms = [plan.primaryTerm, plan.secondaryTerm].filter(Boolean);
+  const tasks = [];
+
+  if (wantsStore('woolworths')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) => searchWoolworthsProducts(t, 28, locationCtx, plan.apiPage))
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  if (wantsStore('coles') && plan.colesQuery) {
+    tasks.push(searchColesProducts(plan.colesQuery, 52, locationCtx, 1));
+  }
+
+  if (wantsStore('aldi')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) => searchAldiProducts(t, 32, locationCtx, plan.apiPage))
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  if (wantsStore('iga')) {
+    tasks.push(
+      Promise.allSettled(
+        terms.map((t) => searchIgaProducts(t, 24, locationCtx, plan.apiPage))
+      ).then((res) =>
+        interleaveUniqueLists(
+          res.map((r) => (r.status === 'fulfilled' ? r.value : []))
+        )
+      )
+    );
+  }
+
+  const settled = await Promise.allSettled(tasks);
+  return interleaveUniqueLists(
+    settled.map((r) => (r.status === 'fulfilled' ? r.value : []))
+  );
 }
 
 export { compareItemAcrossCompetitors, searchSuburbs, findNearbyStores };

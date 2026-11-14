@@ -2,9 +2,19 @@ export type StoreId = 'woolworths' | 'coles' | 'aldi' | 'iga' | 'amazon';
 
 export type StoreFilter = 'all' | StoreId;
 
-export type DealFilter = 'all' | 'sale' | 'half_price';
+export type DealFilter = 'all' | 'regular' | 'sale' | 'half_price';
 
 export type SortOption = 'featured' | 'discount' | 'savings' | 'price_asc';
+
+export interface SubCategoryFilterDef {
+  id: string;
+  label: string;
+  shortLabel: string;
+  parentCategory: string;
+  leafSubCategories: string[];
+  searchQuery: string;
+  popular?: boolean;
+}
 
 export interface SpecialItem {
   id: string;
@@ -25,6 +35,7 @@ export interface SpecialItem {
   promoText: string | null;
   unitPrice: string | null;
   category: string;
+  subCategory?: string;
   imageUrl: string | null;
   productUrl: string | null;
   catalogueName: string | null;

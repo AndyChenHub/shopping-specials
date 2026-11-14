@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -22,13 +22,18 @@ import {
 import {
   DealFilter,
   SpecialItem,
+  StoreFilter,
   StoreId,
   UserStoreLocation,
 } from '../types/specials';
 import { APP_VERSION_INFO } from '../services/versionChecker';
 import {
+  getSubCategoriesForAisle,
+  getSubCategoryDef,
   isSpecialItemHalfPrice,
   isSpecialItemOnSale,
+  isSpecialItemRegularPrice,
+  matchesSubCategory,
 } from '../services/normalizeClient';
 import { SpecialCard } from './SpecialCard';
 import { SavingsRow } from './SavingsRow';
@@ -54,6 +59,13 @@ interface DiscoverViewProps {
   onChangeBrowseDealFilter?: (filter: DealFilter) => void;
   browseInStockOnly?: boolean;
   onToggleBrowseInStockOnly?: () => void;
+  loadingMoreRange?: boolean;
+  onLoadMoreRange?: (params: {
+    category?: string;
+    subCategory?: string;
+    store?: StoreFilter;
+    silent?: boolean;
+  }) => void;
 }
 
 const DISCOVER_STORE_ORDER: StoreId[] = ['woolworths', 'coles', 'aldi', 'iga'];
@@ -78,14 +90,19 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   onChangeBrowseDealFilter,
   browseInStockOnly: controlledInStockOnly,
   onToggleBrowseInStockOnly,
+  loadingMoreRange = false,
+  onLoadMoreRange,
 }) => {
   const { width } = useWindowDimensions();
   const numColumns = width >= 1100 ? 4 : width >= 740 ? 3 : 2;
 
   const [heroIndex, setHeroIndex] = useState<number>(0);
   const [selectedCat, setSelectedCat] = useState<string | null>(null);
+  const [selectedSubCat, setSelectedSubCat] = useState<string>('All');
+  const [visibleCount, setVisibleCount] = useState<number>(48);
   const [localDealFilter, setLocalDealFilter] = useState<DealFilter>('all');
   const [localInStockOnly, setLocalInStockOnly] = useState<boolean>(false);
+  const autoWarmedRef = useRef<Set<string>>(new Set());
 
   const browseDealFilter = controlledDealFilter ?? localDealFilter;
   const setBrowseDealFilter = onChangeBrowseDealFilter ?? setLocalDealFilter;
@@ -94,6 +111,59 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     onToggleBrowseInStockOnly ?? (() => setLocalInStockOnly((v) => !v));
 
   const { timeLeft } = getCatalogueResetInfo();
+
+  const handleSelectAisle = (catId: string | null) => {
+    setSelectedCat(catId);
+    setVisibleCount(48);
+    if (catId && selectedSubCat !== 'All') {
+      const def = getSubCategoryDef(selectedSubCat);
+      if (def && def.parentCategory !== catId) {
+        setSelectedSubCat('All');
+      }
+    }
+  };
+
+  const handleSelectSubCat = (subId: string) => {
+    const nextSub = selectedSubCat === subId ? 'All' : subId;
+    setSelectedSubCat(nextSub);
+    setVisibleCount(48);
+    if (nextSub !== 'All' && selectedCat) {
+      const def = getSubCategoryDef(nextSub);
+      if (def && def.parentCategory !== selectedCat) {
+        setSelectedCat(def.parentCategory);
+      }
+    }
+  };
+
+  const activeSubCategoryList = useMemo(
+    () => getSubCategoriesForAisle(selectedCat),
+    [selectedCat]
+  );
+
+  // Auto-warm full supermarket range when selecting an aisle or subcategory with sparse regular items
+  useEffect(() => {
+    if (!onLoadMoreRange) return;
+    if (!selectedCat && selectedSubCat === 'All') return;
+    const warmKey = `${selectedCat || 'All'}|${selectedSubCat}`;
+    if (autoWarmedRef.current.has(warmKey)) return;
+
+    const matching = allItems.filter((item) => {
+      if (selectedCat && item.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(item, selectedSubCat)) {
+        return false;
+      }
+      return true;
+    });
+    const regCount = matching.filter(isSpecialItemRegularPrice).length;
+    if (matching.length < 20 || regCount < 6) {
+      autoWarmedRef.current.add(warmKey);
+      onLoadMoreRange({
+        category: selectedCat || 'All',
+        subCategory: selectedSubCat,
+        silent: true,
+      });
+    }
+  }, [allItems, onLoadMoreRange, selectedCat, selectedSubCat]);
 
   const halfPriceDeals = useMemo(
     () => allItems.filter(isSpecialItemHalfPrice).slice(0, 18),
@@ -134,27 +204,24 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
   }, [allItems]);
 
   const browseChipCounts = useMemo(() => {
-    const catScoped = selectedCat
-      ? allItems.filter((item) => item.category === selectedCat)
-      : allItems;
+    const catScoped = allItems.filter((item) => {
+      if (selectedCat && item.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(item, selectedSubCat)) {
+        return false;
+      }
+      return true;
+    });
     const dealScoped = browseInStockOnly
       ? catScoped.filter((item) => item.inStock === true)
       : catScoped;
     const stockScoped = catScoped.filter((item) => {
       if (browseDealFilter === 'half_price') return isSpecialItemHalfPrice(item);
       if (browseDealFilter === 'sale') return isSpecialItemOnSale(item);
+      if (browseDealFilter === 'regular') return isSpecialItemRegularPrice(item);
       return true;
     });
-    return {
-      allCount: dealScoped.length,
-      saleCount: dealScoped.filter(isSpecialItemOnSale).length,
-      halfCount: dealScoped.filter(isSpecialItemHalfPrice).length,
-      inStockCount: stockScoped.filter((item) => item.inStock === true).length,
-    };
-  }, [allItems, selectedCat, browseDealFilter, browseInStockOnly]);
 
-  const gridPool = useMemo(() => {
-    return allItems.filter((item) => {
+    const subCatBase = allItems.filter((item) => {
       if (selectedCat && item.category !== selectedCat) return false;
       if (browseDealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) {
         return false;
@@ -162,14 +229,61 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
       if (browseDealFilter === 'sale' && !isSpecialItemOnSale(item)) {
         return false;
       }
+      if (browseDealFilter === 'regular' && !isSpecialItemRegularPrice(item)) {
+        return false;
+      }
       if (browseInStockOnly && item.inStock !== true) return false;
       return true;
     });
-  }, [allItems, selectedCat, browseDealFilter, browseInStockOnly]);
+    const subCounts: Record<string, number> = {};
+    for (const sub of activeSubCategoryList) {
+      let c = 0;
+      for (const item of subCatBase) {
+        if (matchesSubCategory(item, sub.id)) c += 1;
+      }
+      subCounts[sub.id] = c;
+    }
+
+    return {
+      allCount: dealScoped.length,
+      regularCount: dealScoped.filter(isSpecialItemRegularPrice).length,
+      saleCount: dealScoped.filter(isSpecialItemOnSale).length,
+      halfCount: dealScoped.filter(isSpecialItemHalfPrice).length,
+      inStockCount: stockScoped.filter((item) => item.inStock === true).length,
+      subCounts,
+    };
+  }, [
+    allItems,
+    selectedCat,
+    selectedSubCat,
+    browseDealFilter,
+    browseInStockOnly,
+    activeSubCategoryList,
+  ]);
+
+  const gridPool = useMemo(() => {
+    return allItems.filter((item) => {
+      if (selectedCat && item.category !== selectedCat) return false;
+      if (selectedSubCat !== 'All' && !matchesSubCategory(item, selectedSubCat)) {
+        return false;
+      }
+      if (browseDealFilter === 'half_price' && !isSpecialItemHalfPrice(item)) {
+        return false;
+      }
+      if (browseDealFilter === 'sale' && !isSpecialItemOnSale(item)) {
+        return false;
+      }
+      if (browseDealFilter === 'regular' && !isSpecialItemRegularPrice(item)) {
+        return false;
+      }
+      if (browseInStockOnly && item.inStock !== true) return false;
+      return true;
+    });
+  }, [allItems, selectedCat, selectedSubCat, browseDealFilter, browseInStockOnly]);
 
   const displayedGridItems = useMemo(
-    () => (selectedCat ? gridPool : gridPool.slice(0, 36)),
-    [gridPool, selectedCat]
+    () => gridPool.slice(0, visibleCount),
+    [gridPool, visibleCount]
   );
 
   const gridRows = useMemo(() => {
@@ -187,6 +301,57 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
       setHeroIndex(idx);
     }
   };
+
+  const renderSubCategoryChips = () => (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.subCatChipsRow}
+    >
+      {(selectedCat !== null || selectedSubCat !== 'All') && (
+        <Pressable
+          onPress={() => {
+            setSelectedSubCat('All');
+            setVisibleCount(48);
+          }}
+          style={[
+            styles.subCatChip,
+            selectedSubCat === 'All' && styles.subCatChipActive,
+          ]}
+        >
+          <Text
+            style={[
+              styles.subCatChipText,
+              selectedSubCat === 'All' && styles.subCatChipTextActive,
+            ]}
+          >
+            {selectedCat ? `All ${selectedCat}` : 'All types'}
+          </Text>
+        </Pressable>
+      )}
+      {activeSubCategoryList.map((sub) => {
+        const active = selectedSubCat === sub.id;
+        const count = browseChipCounts.subCounts[sub.id] ?? 0;
+        return (
+          <Pressable
+            key={sub.id}
+            onPress={() => handleSelectSubCat(sub.id)}
+            style={[styles.subCatChip, active && styles.subCatChipActive]}
+          >
+            <Text
+              style={[
+                styles.subCatChipText,
+                active && styles.subCatChipTextActive,
+              ]}
+            >
+              {sub.shortLabel}
+              {count > 0 ? ` (${count})` : ''}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
+  );
 
   const renderFilterChips = () => (
     <ScrollView
@@ -208,6 +373,27 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
           ]}
         >
           All items ({browseChipCounts.allCount})
+        </Text>
+      </Pressable>
+
+      <Pressable
+        onPress={() =>
+          setBrowseDealFilter(
+            browseDealFilter === 'regular' ? 'all' : 'regular'
+          )
+        }
+        style={[
+          styles.filterChip,
+          browseDealFilter === 'regular' && styles.filterChipActive,
+        ]}
+      >
+        <Text
+          style={[
+            styles.filterChipText,
+            browseDealFilter === 'regular' && styles.filterChipTextActive,
+          ]}
+        >
+          Regular price ({browseChipCounts.regularCount})
         </Text>
       </Pressable>
 
@@ -284,22 +470,51 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
     if (displayedGridItems.length === 0) {
       return (
         <View style={styles.emptyFilterBox}>
-          <Text style={styles.emptyFilterTitle}>No matching items</Text>
-          <Text style={styles.emptyFilterSub}>
-            Try clearing a deal or stock filter to see all items in this aisle.
+          <Text style={styles.emptyFilterTitle}>
+            {loadingMoreRange ? 'Loading supermarket range…' : 'No matching items yet'}
           </Text>
-          <Pressable
-            onPress={() => {
-              setBrowseDealFilter('all');
-              if (browseInStockOnly) toggleBrowseInStockOnly();
-            }}
-            style={styles.seeAllPill}
-          >
-            <Text style={styles.seeAllText}>Reset filters</Text>
-          </Pressable>
+          <Text style={styles.emptyFilterSub}>
+            {loadingMoreRange
+              ? 'Checking Woolworths, Coles, ALDI & IGA for everyday and special items.'
+              : 'Load more from supermarkets or clear a filter to view all items.'}
+          </Text>
+          <View style={styles.emptyBtnRow}>
+            {onLoadMoreRange && (
+              <Pressable
+                onPress={() =>
+                  onLoadMoreRange({
+                    category: selectedCat || 'All',
+                    subCategory: selectedSubCat,
+                  })
+                }
+                disabled={loadingMoreRange}
+                style={styles.loadMorePrimaryBtn}
+              >
+                {loadingMoreRange ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Ionicons name="cloud-download-outline" size={16} color="#FFFFFF" />
+                )}
+                <Text style={styles.loadMorePrimaryText}>
+                  {loadingMoreRange ? 'Loading…' : 'Load from supermarkets'}
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              onPress={() => {
+                setBrowseDealFilter('all');
+                if (browseInStockOnly) toggleBrowseInStockOnly();
+              }}
+              style={styles.seeAllPill}
+            >
+              <Text style={styles.seeAllText}>Reset filters</Text>
+            </Pressable>
+          </View>
         </View>
       );
     }
+
+    const remainingLoaded = gridPool.length - displayedGridItems.length;
 
     return (
       <View style={styles.gridContainer}>
@@ -322,6 +537,54 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
               ))}
           </View>
         ))}
+
+        <View style={styles.paginationWrap}>
+          {remainingLoaded > 0 ? (
+            <Pressable
+              onPress={() => setVisibleCount((v) => v + 48)}
+              style={({ pressed }) => [
+                styles.loadMoreSecondaryBtn,
+                pressed && { opacity: 0.8 },
+              ]}
+            >
+              <Text style={styles.loadMoreSecondaryText}>
+                Show more items ({remainingLoaded} more ready)
+              </Text>
+            </Pressable>
+          ) : (
+            onLoadMoreRange && (
+              <Pressable
+                onPress={() => {
+                  setVisibleCount((v) => v + 48);
+                  onLoadMoreRange({
+                    category: selectedCat || 'All',
+                    subCategory: selectedSubCat,
+                  });
+                }}
+                disabled={loadingMoreRange}
+                style={({ pressed }) => [
+                  styles.loadMoreSecondaryBtn,
+                  pressed && { opacity: 0.8 },
+                ]}
+              >
+                {loadingMoreRange ? (
+                  <ActivityIndicator size="small" color={COLORS.blue} />
+                ) : (
+                  <Ionicons
+                    name="add-circle-outline"
+                    size={17}
+                    color={COLORS.blue}
+                  />
+                )}
+                <Text style={styles.loadMoreSecondaryText}>
+                  {loadingMoreRange
+                    ? 'Loading more from supermarkets…'
+                    : 'Load more from supermarkets'}
+                </Text>
+              </Pressable>
+            )
+          )}
+        </View>
       </View>
     );
   };
@@ -412,8 +675,8 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
       >
         <Pressable
           onPress={() =>
-            setSelectedCat((prev) =>
-              prev === 'Fruit & Veg' ? null : 'Fruit & Veg'
+            handleSelectAisle(
+              selectedCat === 'Fruit & Veg' ? null : 'Fruit & Veg'
             )
           }
           style={({ pressed }) => [
@@ -440,8 +703,8 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
 
         <Pressable
           onPress={() =>
-            setSelectedCat((prev) =>
-              prev === 'Pantry & Snacks' ? null : 'Pantry & Snacks'
+            handleSelectAisle(
+              selectedCat === 'Pantry & Snacks' ? null : 'Pantry & Snacks'
             )
           }
           style={({ pressed }) => [
@@ -484,9 +747,7 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
           return (
             <Pressable
               key={cat.id}
-              onPress={() =>
-                setSelectedCat((prev) => (prev === cat.id ? null : cat.id))
-              }
+              onPress={() => handleSelectAisle(isActive ? null : cat.id)}
               style={({ pressed }) => [
                 styles.catItem,
                 pressed && { transform: [{ scale: 0.94 }] },
@@ -512,19 +773,30 @@ export const DiscoverView: React.FC<DiscoverViewProps> = ({
         })}
       </ScrollView>
 
-      {/* Filtered Category View OR Curated Discover Feed */}
-      {selectedCat ? (
+      {/* Granular Quick Type / Subcategory Chips (Snacks, Meat, Chocolate, Lollies, Fruit, etc.) */}
+      {renderSubCategoryChips()}
+
+      {/* Filtered Category / Subcategory View OR Curated Discover Feed */}
+      {selectedCat || selectedSubCat !== 'All' ? (
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.sectionTitle}>{selectedCat}</Text>
+              <Text style={styles.sectionTitle}>
+                {selectedSubCat !== 'All'
+                  ? getSubCategoryDef(selectedSubCat)?.label || selectedSubCat
+                  : selectedCat}
+              </Text>
               <Text style={styles.sectionSub}>
-                {gridPool.length} items across{' '}
+                {gridPool.length} items (regular & on sale) across{' '}
                 {new Set(gridPool.map((i) => i.store)).size} stores
               </Text>
             </View>
             <Pressable
-              onPress={() => setSelectedCat(null)}
+              onPress={() => {
+                setSelectedCat(null);
+                setSelectedSubCat('All');
+                setVisibleCount(48);
+              }}
               style={styles.seeAllPill}
             >
               <Text style={styles.seeAllText}>Clear</Text>
@@ -969,6 +1241,34 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
     gap: 8,
   },
+  subCatChipsRow: {
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 2,
+    gap: 8,
+  },
+  subCatChip: {
+    height: 34,
+    paddingHorizontal: 13,
+    borderRadius: 999,
+    backgroundColor: COLORS.surfaceAlt,
+    borderWidth: 1,
+    borderColor: COLORS.line,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subCatChipActive: {
+    backgroundColor: COLORS.blue,
+    borderColor: COLORS.blue,
+  },
+  subCatChipText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.ink2,
+  },
+  subCatChipTextActive: {
+    color: '#FFFFFF',
+  },
   filterChip: {
     height: 36,
     paddingHorizontal: 14,
@@ -1024,6 +1324,46 @@ const styles = StyleSheet.create({
     color: COLORS.muted,
     textAlign: 'center',
     marginBottom: 4,
+  },
+  emptyBtnRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  loadMorePrimaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.blue,
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 999,
+  },
+  loadMorePrimaryText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  paginationWrap: {
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  loadMoreSecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: COLORS.blueSoft,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 999,
+  },
+  loadMoreSecondaryText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: COLORS.blueDark,
   },
   footerNote: {
     textAlign: 'center',

@@ -7,7 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CACHE_DIR = path.resolve(__dirname, '..', '.cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'specials-cache.json');
 
-export const CACHE_SCHEMA_VERSION = 2;
+export const CACHE_SCHEMA_VERSION = 3;
 
 let memoryStore = {
   schemaVersion: CACHE_SCHEMA_VERSION,
